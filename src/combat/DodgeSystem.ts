@@ -48,6 +48,49 @@ export class DodgeSystem {
   }
 
   /**
+   * Computes the probability (0..1) that an active dodge stance cleanly evades an incoming attack.
+   * Always capped below 1.0 so dodging is never guaranteed.
+   */
+  public static getDodgeSuccessChance(
+    dodgeType: DodgeType,
+    playerLane: Lane,
+    telegraph: AttackTelegraph | undefined,
+    consecutiveDodges: number,
+    dodgeEfficiencyBonus: number = 0
+  ): number {
+    if (telegraph && !telegraph.canDodge) {
+      return 0;
+    }
+
+    const spamPenalty = Math.max(0, (consecutiveDodges - 1) * 0.22);
+    const dangerPenalty =
+      dodgeType === 'perfect_dodge'
+        ? 0
+        : telegraph?.dangerLevel === 'extreme'
+          ? 0.08
+          : telegraph?.dangerLevel === 'high'
+            ? 0.04
+            : 0;
+
+    if (dodgeType === 'perfect_dodge') {
+      const isValidTelegraph =
+        telegraph &&
+        (telegraph.dangerLevel === 'high' ||
+          telegraph.dangerLevel === 'extreme' ||
+          telegraph.targetLanes.includes(playerLane));
+      const base = isValidTelegraph ? 0.52 : 0.3;
+      return Math.min(0.8, Math.max(0.15, base - spamPenalty + dodgeEfficiencyBonus));
+    }
+
+    if (dodgeType === 'arcane_blink') {
+      return Math.min(0.88, Math.max(0.25, 0.68 - spamPenalty - dangerPenalty + dodgeEfficiencyBonus));
+    }
+
+    // quickstep
+    return Math.min(0.85, Math.max(0.2, 0.58 - spamPenalty - dangerPenalty + dodgeEfficiencyBonus));
+  }
+
+  /**
    * Resolves an incoming attack against the player's chosen dodge stance and lane.
    */
   public static resolveIncomingAttack(
@@ -58,8 +101,10 @@ export class DodgeSystem {
     consecutiveDodges: number,
     dodgeEfficiencyBonus: number = 0
   ): DodgeResolution {
-    // Check lane avoidance first: if attack targets specific lanes and player is NOT in them!
+    // Passive lane avoidance: if attack targets specific lanes and player was already outside them
+    // (Arcane Blink resolves via its own probability roll so blinking is not a guaranteed evade).
     if (
+      dodgeType !== 'arcane_blink' &&
       telegraph &&
       telegraph.attackType !== 'homing' &&
       telegraph.targetLanes.length > 0 &&
@@ -103,18 +148,16 @@ export class DodgeSystem {
       };
     }
 
-    // Penalty for predictable consecutive dodging
-    const spamPenalty = Math.max(0, (consecutiveDodges - 1) * 0.22);
+    const successChance = this.getDodgeSuccessChance(
+      dodgeType,
+      playerLane,
+      telegraph,
+      consecutiveDodges,
+      dodgeEfficiencyBonus
+    );
+    const pct = Math.round(successChance * 100);
 
     if (dodgeType === 'perfect_dodge') {
-      // Perfect dodge requires responding to an active high/extreme/single-lane telegraph
-      const isValidTelegraph =
-        telegraph &&
-        (telegraph.dangerLevel === 'high' ||
-          telegraph.dangerLevel === 'extreme' ||
-          telegraph.targetLanes.includes(playerLane));
-
-      const successChance = Math.max(0.25, (isValidTelegraph ? 0.85 : 0.45) - spamPenalty + dodgeEfficiencyBonus);
       if (Math.random() < successChance) {
         return {
           evaded: true,
@@ -123,24 +166,22 @@ export class DodgeSystem {
           damageAvoided: incomingDamage,
           manaRecovered: 12,
           grantsNextTurnBonus: true,
-          reason: 'PERFECT DODGE! Slipped through the telegraph (+12 Mana & +25% Next Spell)!',
-        };
-      } else {
-        const graze = 0.5;
-        return {
-          evaded: false,
-          isPerfectDodge: false,
-          damageMultiplier: graze,
-          damageAvoided: Math.round(incomingDamage * 0.5),
-          manaRecovered: 0,
-          grantsNextTurnBonus: false,
-          reason: 'Mistimed Perfect Dodge — grazed for 50% damage.',
+          reason: `PERFECT DODGE! (${pct}% roll) Slipped through the telegraph (+12 Mana & +25% Next Spell)!`,
         };
       }
+      const graze = 0.5;
+      return {
+        evaded: false,
+        isPerfectDodge: false,
+        damageMultiplier: graze,
+        damageAvoided: Math.round(incomingDamage * 0.5),
+        manaRecovered: 0,
+        grantsNextTurnBonus: false,
+        reason: `Mistimed Perfect Dodge (${pct}% chance) — grazed for 50% damage.`,
+      };
     }
 
     if (dodgeType === 'arcane_blink') {
-      const successChance = Math.max(0.35, 0.9 - spamPenalty + dodgeEfficiencyBonus);
       if (Math.random() < successChance) {
         return {
           evaded: true,
@@ -149,7 +190,7 @@ export class DodgeSystem {
           damageAvoided: incomingDamage,
           manaRecovered: 0,
           grantsNextTurnBonus: false,
-          reason: `Arcane Blink into ${playerLane.toUpperCase()} lane evaded the strike!`,
+          reason: `Arcane Blink into ${playerLane.toUpperCase()} lane evaded the strike (${pct}% roll)!`,
         };
       }
       return {
@@ -159,13 +200,12 @@ export class DodgeSystem {
         damageAvoided: Math.round(incomingDamage * 0.6),
         manaRecovered: 0,
         grantsNextTurnBonus: false,
-        reason: 'Arcane Blink clipped by residual magic (40% damage).',
+        reason: `Arcane Blink clipped by residual magic (${pct}% chance — 40% damage).`,
       };
     }
 
     // Quickstep
-    const quickstepChance = Math.max(0.25, 0.72 - spamPenalty + dodgeEfficiencyBonus);
-    if (Math.random() < quickstepChance) {
+    if (Math.random() < successChance) {
       return {
         evaded: true,
         isPerfectDodge: false,
@@ -173,7 +213,7 @@ export class DodgeSystem {
         damageAvoided: incomingDamage,
         manaRecovered: 0,
         grantsNextTurnBonus: false,
-        reason: 'Quickstepped cleanly out of harm’s way!',
+        reason: `Quickstepped cleanly out of harm’s way (${pct}% roll)!`,
       };
     }
 
@@ -184,7 +224,7 @@ export class DodgeSystem {
       damageAvoided: Math.round(incomingDamage * 0.45),
       manaRecovered: 0,
       grantsNextTurnBonus: false,
-      reason: 'Quickstep partially grazed (55% damage).',
+      reason: `Quickstep partially grazed (${pct}% chance — 55% damage).`,
     };
   }
 }

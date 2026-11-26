@@ -67,4 +67,46 @@ describe('DodgeSystem', () => {
     expect(res.damageMultiplier).toBe(0.65);
     expect(res.damageAvoided).toBe(14);
   });
+
+  it('caps dodge probabilities below 100% even with high dodge efficiency bonus', () => {
+    const telegraph: AttackTelegraph = {
+      targetLanes: ['center'],
+      attackType: 'single_lane',
+      dangerLevel: 'moderate',
+      canDodge: true,
+      canBlock: true,
+      canInterrupt: false,
+      warningText: 'Incoming bolt!',
+    };
+
+    expect(DodgeSystem.getDodgeSuccessChance('quickstep', 'center', telegraph, 1, 0.9)).toBeLessThanOrEqual(0.85);
+    expect(DodgeSystem.getDodgeSuccessChance('arcane_blink', 'center', telegraph, 1, 0.9)).toBeLessThanOrEqual(0.88);
+    expect(DodgeSystem.getDodgeSuccessChance('perfect_dodge', 'center', telegraph, 1, 0.9)).toBeLessThanOrEqual(0.8);
+  });
+
+  it('can fail and deal graze damage on high random rolls, including arcane_blink', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.95);
+    const telegraph: AttackTelegraph = {
+      targetLanes: ['center'],
+      attackType: 'single_lane',
+      dangerLevel: 'moderate',
+      canDodge: true,
+      canBlock: true,
+      canInterrupt: false,
+      warningText: 'Incoming bolt!',
+    };
+
+    const quickstepFail = DodgeSystem.resolveIncomingAttack('quickstep', 'center', telegraph, 40, 1);
+    expect(quickstepFail.evaded).toBe(false);
+    expect(quickstepFail.damageMultiplier).toBe(0.55);
+
+    // Even when arcane_blink places player in 'left' (outside 'center'), it still uses its probability roll
+    const blinkFail = DodgeSystem.resolveIncomingAttack('arcane_blink', 'left', telegraph, 40, 1);
+    expect(blinkFail.evaded).toBe(false);
+    expect(blinkFail.damageMultiplier).toBe(0.4);
+
+    const perfectFail = DodgeSystem.resolveIncomingAttack('perfect_dodge', 'center', telegraph, 40, 1);
+    expect(perfectFail.evaded).toBe(false);
+    expect(perfectFail.damageMultiplier).toBe(0.5);
+  });
 });

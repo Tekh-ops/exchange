@@ -1,11 +1,14 @@
 import { ReactNode } from 'react';
 import { useCombatStore } from '../stores/combatStore';
+import { usePlayerStore } from '../stores/playerStore';
 import { DodgeSystem, DodgeType, DODGE_COSTS } from '../combat/DodgeSystem';
 import { soundEngine } from '../voice/soundEngine';
 import { Wind, Sparkles, ShieldCheck } from 'lucide-react';
 
 export function DodgeControls() {
-  const { player, turnPhase, performDodge, enemyIntent, perfectDodgeBuff } = useCombatStore();
+  const { player, turnPhase, performDodge, enemyIntent, perfectDodgeBuff, consecutiveDodges } =
+    useCombatStore();
+  const dodgeEfficiencyBonus = usePlayerStore((s) => s.getDodgeEfficiencyBonus());
   const stamina = player.stamina ?? 100;
 
   const dodgeButtons: {
@@ -46,6 +49,15 @@ export function DodgeControls() {
         {dodgeButtons.map((btn) => {
           const check = DodgeSystem.canAffordDodge(btn.type, stamina, player.mana);
           const disabled = turnPhase !== 'player_turn' || !check.canAfford;
+          const chancePct = Math.round(
+            DodgeSystem.getDodgeSuccessChance(
+              btn.type,
+              player.lane ?? 'center',
+              enemyIntent?.telegraph,
+              consecutiveDodges + 1,
+              dodgeEfficiencyBonus
+            ) * 100
+          );
           return (
             <button
               key={btn.type}
@@ -55,13 +67,14 @@ export function DodgeControls() {
                 soundEngine.playClick();
                 performDodge(btn.type);
               }}
-              title={`${btn.label}: ${btn.desc}${!check.canAfford ? ` (${check.reason})` : ''}`}
+              title={`${btn.label} (${chancePct}% chance): ${btn.desc}${!check.canAfford ? ` (${check.reason})` : ''}`}
               className={`pixel-btn px-2 py-1 flex items-center gap-1 font-pixel text-[8px] cursor-pointer transition ${
                 disabled ? 'opacity-40 cursor-not-allowed' : 'hover:scale-105 active:scale-95 text-gray-200'
               }`}
             >
               {btn.icon}
               <span>{btn.label}</span>
+              <span className="text-emerald-300/90 text-[7px]">{chancePct}%</span>
               <span className="text-sky-300/90 text-[7px]">{btn.short}</span>
             </button>
           );
