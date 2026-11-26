@@ -253,6 +253,37 @@ class SoundEngine {
       // Audio errors should never crash user interactions
     }
   }
+  /**
+   * Level-up ascending arpeggio
+   */
+  public playLevelUp(): void {
+    try {
+      if (this.isMuted) return;
+      const notes = [523.25, 659.25, 783.99, 1046.5, 1318.5];
+      notes.forEach((freq, i) => {
+        setTimeout(() => {
+          try {
+            const ctx = this.getAudioContext();
+            if (!ctx) return;
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(freq, ctx.currentTime);
+            gain.gain.setValueAtTime(0.18 * this.masterVolume, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.22);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.25);
+          } catch {
+            // Ignored
+          }
+        }, i * 85);
+      });
+    } catch {
+      // Audio errors should never crash user interactions
+    }
+  }
 }
 
 export const soundEngine = new SoundEngine();

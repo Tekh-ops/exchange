@@ -1,10 +1,20 @@
 import { useState, useEffect, useRef } from 'react';
 import { Mic, MicOff, Volume2, XCircle } from 'lucide-react';
-import { voiceCommandManager } from '../voice/VoiceCommandManager';
+import { voiceCommandManager, VoiceSessionState } from '../voice/VoiceCommandManager';
 import { VoiceCommandParser, ParsedVoiceCommand } from '../voice/VoiceCommandParser';
 import { loadVoiceSettings, speakFeedback } from '../voice/VoiceSettings';
 import { useCombatStore } from '../stores/combatStore';
 import { soundEngine } from '../voice/soundEngine';
+
+type FeedbackPhase =
+  | 'inactive'
+  | 'listening'
+  | 'recognizing'
+  | 'cast'
+  | 'rejected'
+  | 'ambiguous'
+  | 'denied'
+  | 'unsupported';
 
 export function VoiceCommandControl() {
   const {
@@ -19,14 +29,21 @@ export function VoiceCommandControl() {
     battleRecorder,
   } = useCombatStore();
 
-  const [listening, setListening] = useState(false);
+  const [sessionState, setSessionState] = useState<VoiceSessionState>(
+    voiceCommandManager.isSupported() ? 'inactive' : 'unsupported'
+  );
+  const [feedbackPhase, setFeedbackPhase] = useState<FeedbackPhase>(
+    voiceCommandManager.isSupported() ? 'inactive' : 'unsupported'
+  );
   const [transcript, setTranscript] = useState('');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [previewCommand, setPreviewCommand] = useState<ParsedVoiceCommand | null>(null);
+  const [identifiedSpell, setIdentifiedSpell] = useState<string | null>(null);
+  const [identifiedTarget, setIdentifiedTarget] = useState<string | null>(null);
 
   const settings = loadVoiceSettings();
   const supported = voiceCommandManager.isSupported();
-  const latestTranscriptRef = useRef('');
+  const latestAlternativesRef = useRef<string[]>([]);
+  const executedThisSessionRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -35,25 +52,65 @@ export function VoiceCommandControl() {
   }, []);
 
   const executeParsedCommand = (parsed: ParsedVoiceCommand) => {
+    if (executedThisSessionRef.current) return;
+    executedThisSessionRef.current = true;
+
+    if (parsed.kind === 'ambiguous') {
+      setFeedbackPhase('ambiguous');
+      setStatusMessage(parsed.reason);
+      addLog(`🎙️ Ambiguous voice command: ${parsed.reason}`, 'system');
+      if (battleRecorder) battleRecorder.recordVoiceAttempt(false, parsed.rawTranscript);
+      return;
+    }
+
     if (parsed.kind === 'spell') {
-      if (parsed.targetName) {
-        const match = enemies.find(
-          (e) =>
-            e.entity.hp > 0 &&
-            e.entity.name.toLowerCase().includes(parsed.targetName!.toLowerCase())
-        );
-        if (match) {
-          selectTarget(match.entity.id);
+      setIdentifiedSpell(parsed.spellName);
+      const livingEnemies = enemies.map((e) => e.entity).filter((e) => e.hp > 0);
+      const targetRes = VoiceCommandParser.resolveVoiceTarget(parsed.targetName, livingEnemies);
+
+      if (targetRes) {
+        if (targetRes.status === 'ambiguous') {
+          setFeedbackPhase('ambiguous');
+          const msg = `Multiple targets match "${parsed.targetName}": ${targetRes.candidates.join(', ')}. Click or specify one.`;
+          setStatusMessage(msg);
+          addLog(`🎙️ ${msg}`, 'system');
+          if (battleRecorder) battleRecorder.recordVoiceAttempt(false, parsed.rawTranscript);
+          return;
+        }
+        if (targetRes.status === 'not_found') {
+          setFeedbackPhase('rejected');
+          const msg = `Target "${targetRes.query}" not found on the battlefield.`;
+          setStatusMessage(msg);
+          addLog(`🎙️ ${msg}`, 'system');
+          if (battleRecorder) battleRecorder.recordVoiceAttempt(false, parsed.rawTranscript);
+          return;
+        }
+        if (targetRes.status === 'matched') {
+          setIdentifiedTarget(targetRes.enemyName);
+          selectTarget(targetRes.enemyId);
+        } else if (targetRes.status === 'all') {
+          const spellObj = activeSpells.find((s) => s.id === parsed.spellId);
+          if (spellObj && spellObj.targetRule !== 'all_enemies' && !parsed.charge) {
+            setFeedbackPhase('rejected');
+            const msg = `${parsed.spellName} cannot target all enemies.`;
+            setStatusMessage(msg);
+            addLog(`🎙️ ${msg}`, 'system');
+            if (battleRecorder) battleRecorder.recordVoiceAttempt(false, parsed.rawTranscript);
+            return;
+          }
+          setIdentifiedTarget('All Enemies');
         }
       }
 
       const res = castSpell(parsed.spellId, { charge: parsed.charge, viaVoice: true });
       if (res.success) {
         const msg = parsed.charge ? `Charging ${parsed.spellName}!` : `Cast ${parsed.spellName}!`;
+        setFeedbackPhase('cast');
         setStatusMessage(msg);
         speakFeedback(msg, settings.spokenFeedback);
       } else {
-        setStatusMessage(res.reason || 'Spell failed.');
+        setFeedbackPhase('rejected');
+        setStatusMessage(res.reason || 'Spell rejected by combat rules.');
         if (battleRecorder) battleRecorder.recordVoiceAttempt(false, parsed.rawTranscript);
       }
       return;
@@ -62,9 +119,11 @@ export function VoiceCommandControl() {
     if (parsed.kind === 'dodge') {
       const res = performDodge(parsed.dodgeType, parsed.targetLane);
       if (res.success) {
+        setFeedbackPhase('cast');
         setStatusMessage(`Voice: ${parsed.dodgeType.replace('_', ' ')}`);
         if (battleRecorder) battleRecorder.recordVoiceAttempt(true, parsed.rawTranscript);
       } else {
+        setFeedbackPhase('rejected');
         setStatusMessage(res.reason || 'Dodge failed.');
         if (battleRecorder) battleRecorder.recordVoiceAttempt(false, parsed.rawTranscript);
       }
@@ -74,80 +133,105 @@ export function VoiceCommandControl() {
     if (parsed.kind === 'move_lane') {
       const res = moveLane(parsed.direction);
       if (res.success) {
-        setStatusMessage(`Moved ${parsed.direction}`);
+        setFeedbackPhase('cast');
+        setStatusMessage(`Moved ${parsed.direction} lane`);
         if (battleRecorder) battleRecorder.recordVoiceAttempt(true, parsed.rawTranscript);
       } else {
-        setStatusMessage(res.reason || 'Cannot move.');
+        setFeedbackPhase('rejected');
+        setStatusMessage(res.reason || 'Cannot move lanes.');
         if (battleRecorder) battleRecorder.recordVoiceAttempt(false, parsed.rawTranscript);
       }
       return;
     }
 
+    setFeedbackPhase('rejected');
     setStatusMessage(parsed.reason);
-    addLog(`🎙️ Voice command not recognized: "${parsed.rawTranscript}"`, 'system');
+    addLog(`🎙️ Voice command rejected: "${parsed.rawTranscript}"`, 'system');
     if (battleRecorder) battleRecorder.recordVoiceAttempt(false, parsed.rawTranscript);
   };
 
   const startVoice = () => {
     if (!settings.enabled || !supported || turnPhase !== 'player_turn') return;
+    if (voiceCommandManager.isListening()) return;
+
     soundEngine.playClick();
     setTranscript('');
-    setPreviewCommand(null);
+    setIdentifiedSpell(null);
+    setIdentifiedTarget(null);
     setStatusMessage('Listening... speak spell, dodge, or lane');
-    latestTranscriptRef.current = '';
+    setFeedbackPhase('listening');
+    latestAlternativesRef.current = [];
+    executedThisSessionRef.current = false;
 
-    const started = voiceCommandManager.startListening(settings.language, {
-      onTranscript: (text, isFinal) => {
+    voiceCommandManager.startListening(settings.language, {
+      onStateChange: (st) => {
+        setSessionState(st);
+        if (st === 'listening') setFeedbackPhase('listening');
+        else if (st === 'recognizing') setFeedbackPhase('recognizing');
+        else if (st === 'denied') setFeedbackPhase('denied');
+        else if (st === 'unsupported') setFeedbackPhase('unsupported');
+      },
+      onTranscript: (text, isFinal, alternatives) => {
         setTranscript(text);
-        latestTranscriptRef.current = text;
-        const parsed = VoiceCommandParser.parse(text, activeSpells);
-        setPreviewCommand(parsed);
+        latestAlternativesRef.current = alternatives.length > 0 ? alternatives : [text];
+        const parsed = VoiceCommandParser.parseAlternatives(
+          latestAlternativesRef.current,
+          activeSpells
+        );
+        if (parsed.kind === 'spell') {
+          setIdentifiedSpell(parsed.spellName);
+          if (parsed.targetName) setIdentifiedTarget(parsed.targetName);
+        }
         if (isFinal) {
           voiceCommandManager.stopListening();
-          setListening(false);
           executeParsedCommand(parsed);
         }
       },
-      onError: (err) => {
-        setListening(false);
+      onError: (err, code) => {
+        setSessionState(code === 'not-allowed' || code === 'service-not-allowed' ? 'denied' : 'inactive');
+        setFeedbackPhase(code === 'not-allowed' || code === 'service-not-allowed' ? 'denied' : 'rejected');
         setStatusMessage(err);
       },
       onEnd: () => {
-        setListening(false);
+        setSessionState('inactive');
       },
     });
-
-    if (started) {
-      setListening(true);
-    }
   };
 
   const stopVoice = () => {
-    if (!listening) return;
+    if (!voiceCommandManager.isListening()) return;
     voiceCommandManager.stopListening();
-    setListening(false);
-    if (latestTranscriptRef.current) {
-      const parsed = VoiceCommandParser.parse(latestTranscriptRef.current, activeSpells);
+    setSessionState('inactive');
+    if (!executedThisSessionRef.current && latestAlternativesRef.current.length > 0) {
+      const parsed = VoiceCommandParser.parseAlternatives(
+        latestAlternativesRef.current,
+        activeSpells
+      );
       executeParsedCommand(parsed);
     }
   };
 
   const cancelVoice = () => {
+    executedThisSessionRef.current = true;
     voiceCommandManager.cancel();
-    setListening(false);
+    setSessionState('inactive');
+    setFeedbackPhase('inactive');
     setTranscript('');
-    setPreviewCommand(null);
+    setIdentifiedSpell(null);
+    setIdentifiedTarget(null);
     setStatusMessage('Voice cast cancelled.');
   };
 
   if (!settings.enabled) return null;
+
+  const isListening = sessionState === 'listening' || sessionState === 'recognizing';
 
   return (
     <div className="flex items-center gap-2 relative">
       {!supported ? (
         <div
           className="px-2 py-1 rounded bg-purple-950/70 border border-purple-800/60 font-pixel text-[8px] text-gray-400 flex items-center gap-1"
-          title="Browser SpeechRecognition API unavailable in this browser"
+          title="Browser SpeechRecognition API unavailable in this browser. Use mouse or keys 1-6."
         >
           <MicOff size={12} />
           <span>VOICE N/A</span>
@@ -161,30 +245,39 @@ export function VoiceCommandControl() {
             onMouseUp={settings.mode === 'push-to-talk' ? stopVoice : undefined}
             onClick={
               settings.mode === 'toggle'
-                ? () => (listening ? stopVoice() : startVoice())
+                ? () => (isListening ? stopVoice() : startVoice())
                 : undefined
             }
             className={`pixel-btn px-2.5 py-1.5 flex items-center gap-1.5 font-pixel text-[9px] cursor-pointer transition ${
-              listening
+              isListening
                 ? 'border-red-400 text-red-300 bg-red-950/60 animate-pulse'
                 : 'text-amber-200 border-amber-600/70 hover:scale-105'
             } disabled:opacity-40 disabled:cursor-not-allowed`}
             title={
               settings.mode === 'push-to-talk'
-                ? 'Hold to speak a spell (e.g. "Cast Arcane Dart", "Dodge", "Move Left")'
+                ? 'Hold to speak a spell (e.g. "Cast Arcane Dart on Malakor")'
                 : 'Press to speak a spell, dodge, or lane command (press again to stop)'
             }
           >
-            {listening ? <Volume2 size={13} /> : <Mic size={13} />}
-            <span>{listening ? 'LISTENING...' : settings.mode === 'push-to-talk' ? 'HOLD TO CAST' : 'VOICE CAST'}</span>
+            {isListening ? <Volume2 size={13} /> : <Mic size={13} />}
+            <span>
+              {sessionState === 'recognizing'
+                ? 'RECOGNIZING...'
+                : isListening
+                ? 'LISTENING...'
+                : settings.mode === 'push-to-talk'
+                ? 'HOLD TO CAST'
+                : 'VOICE CAST'}
+            </span>
           </button>
 
-          {listening && (
+          {isListening && (
             <button
               type="button"
               onClick={cancelVoice}
               className="p-1 text-red-400 hover:text-red-200 cursor-pointer"
               title="Cancel voice input"
+              aria-label="Cancel voice input"
             >
               <XCircle size={14} />
             </button>
@@ -192,20 +285,40 @@ export function VoiceCommandControl() {
         </div>
       )}
 
-      {(transcript || statusMessage) && (
-        <div className="absolute bottom-full left-0 mb-2 w-64 p-2 pixel-box bg-[#120b21]/95 border border-purple-500/70 pointer-events-none z-50">
+      {(transcript || statusMessage || feedbackPhase !== 'inactive') && (
+        <div className="absolute bottom-full left-0 mb-2 w-72 p-2.5 pixel-box bg-[#120b21]/95 border border-purple-500/70 pointer-events-none z-50 space-y-0.5">
+          <div className="flex items-center justify-between font-pixel text-[7px] text-purple-300 uppercase">
+            <span>VOICE STATUS</span>
+            <span
+              className={
+                feedbackPhase === 'cast'
+                  ? 'text-emerald-400'
+                  : feedbackPhase === 'rejected' || feedbackPhase === 'denied'
+                  ? 'text-red-400'
+                  : feedbackPhase === 'ambiguous'
+                  ? 'text-amber-300'
+                  : 'text-sky-300'
+              }
+            >
+              {feedbackPhase.toUpperCase()}
+            </span>
+          </div>
+
           {transcript && (
-            <div className="font-lore text-[11px] text-purple-200 truncate">
-              Heard: "{transcript}"
+            <div className="font-lore text-[11px] text-purple-100 truncate">
+              Transcript: "{transcript}"
             </div>
           )}
-          {previewCommand && previewCommand.kind === 'spell' && (
-            <div className="font-pixel text-[8px] text-amber-300 mt-0.5">
-              Match: {previewCommand.spellName} ({Math.round(previewCommand.confidence * 100)}%)
+          {identifiedSpell && (
+            <div className="font-pixel text-[8px] text-amber-300">
+              Spell: {identifiedSpell}
+              {identifiedTarget ? ` → ${identifiedTarget}` : ''}
             </div>
           )}
           {statusMessage && (
-            <div className="font-pixel text-[8px] text-emerald-300 mt-0.5">{statusMessage}</div>
+            <div className="font-lore text-[11px] text-emerald-300 leading-tight">
+              {statusMessage}
+            </div>
           )}
         </div>
       )}

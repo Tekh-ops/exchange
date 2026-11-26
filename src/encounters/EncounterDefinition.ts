@@ -26,12 +26,22 @@ export interface EncounterDefinition {
   id: string;
   name: string;
   subtitle: string;
-  difficulty: 'duel' | 'skirmish' | 'hard' | 'boss';
+  difficulty: 'duel' | 'skirmish' | 'hard' | 'boss' | 'legendary';
   description: string;
+  recommendedLevel?: number;
+  minLevel?: number;
+  isLegendaryBoss?: boolean;
+  warningText?: string;
   enemies: EnemyTemplate[];
   rewards: {
     xp: number;
     gold: number;
+  };
+  firstVictoryRewards?: {
+    xp: number;
+    gold: number;
+    spellId?: string;
+    equipmentId?: string;
   };
 }
 
@@ -170,6 +180,52 @@ export const ENEMY_TEMPLATES: Record<string, EnemyTemplate> = {
     spellIds: ['void_bolt'],
     spriteTint: 0xc084fc,
   },
+  eternal_construct: {
+    id: 'eternal_construct',
+    name: 'Eternal Construct',
+    title: 'Arcane Bastion',
+    maxHp: 450,
+    maxMana: 100,
+    spellPower: 14,
+    critRate: 0.08,
+    maxPosture: 60,
+    lane: 'right',
+    role: 'support',
+    isBoss: false,
+    spellIds: ['ally_ward', 'ally_mend', 'void_bolt'],
+    spriteTint: 0xfacc15,
+  },
+  vorath: {
+    id: 'vorath',
+    name: 'Vorath',
+    title: 'The Eternal Arcanist',
+    maxHp: 25000,
+    maxMana: 500,
+    spellPower: 22,
+    critRate: 0.14,
+    maxPosture: 180,
+    lane: 'center',
+    role: 'boss',
+    isBoss: true,
+    bossId: 'vorath',
+    baseResistanceProfile: {
+      fire: 0.2,
+      ice: 0.2,
+      lightning: 0.2,
+      arcane: 0.25,
+      poison: 0.15,
+    },
+    resistanceGrowthRate: 1.3,
+    maxResistanceCap: 0.45,
+    spellIds: [
+      'eternal_bolt',
+      'arcane_ward_vorath',
+      'abyssal_lance',
+      'chronal_snare',
+      'apocalypse_singularity',
+    ],
+    spriteTint: 0xd4af37,
+  },
 };
 
 export const ENCOUNTERS: Record<string, EncounterDefinition> = {
@@ -231,8 +287,28 @@ export const ENCOUNTERS: Record<string, EncounterDefinition> = {
     name: 'Umbrax the Slippery',
     subtitle: 'Shadow Staged Boss',
     difficulty: 'boss',
+    recommendedLevel: 3,
     description: 'A deceptive shadow sorcerer who shifts lanes and punishes predictable dodging.',
     enemies: [ENEMY_TEMPLATES.shadow_conjurer],
     rewards: { xp: 115, gold: 75 },
+  },
+  vorath_legendary: {
+    id: 'vorath_legendary',
+    name: 'Vorath — The Eternal Arcanist',
+    subtitle: 'Legendary 3-Phase Boss (25,000 HP)',
+    difficulty: 'legendary',
+    recommendedLevel: 5,
+    minLevel: 3,
+    isLegendaryBoss: true,
+    warningText: 'LONG LEGENDARY ENCOUNTER (25,000 HP • 3 PHASES). Vorath adapts rapidly, summons constructs, and unleashes multi-lane singularities.',
+    description: 'An immortal arcanist of ancient gold and violet fire. Demands mastery of synergies, posture breaks, and evasion.',
+    enemies: [ENEMY_TEMPLATES.vorath],
+    rewards: { xp: 450, gold: 200 },
+    firstVictoryRewards: {
+      xp: 1200,
+      gold: 500,
+      spellId: 'eternal_annihilation',
+      equipmentId: 'crown_of_eternity',
+    },
   },
 };

@@ -1,13 +1,14 @@
 import { useCombatStore } from '../stores/combatStore';
-import { usePlayerStore } from '../stores/playerStore';
+import { usePlayerStore, EncounterRewardClaimResult } from '../stores/playerStore';
 import { useGameStore } from '../stores/gameStore';
 import { soundEngine } from '../voice/soundEngine';
 import { VICTORY_BANTER, DEFEAT_BANTER } from '../dialogue/banterData';
 import { getBattleHistoryRepository } from '../history/BattleHistoryRepository';
 import { LeaderboardEngine } from '../history/LeaderboardEngine';
+import { calculateBattleXp } from '../progression/progressionRules';
 import { BattleRecordDetails } from './BattleRecordDetails';
 import { BattleChronicle } from './BattleChronicle';
-import { Trophy, Skull, RotateCcw, Home, FileText, Scroll, Award } from 'lucide-react';
+import { Trophy, Skull, RotateCcw, Home, FileText, Scroll, Award, Sparkles } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
 interface GameOverModalProps {
@@ -15,11 +16,11 @@ interface GameOverModalProps {
 }
 
 export function GameOverModal({ onRestart }: GameOverModalProps) {
-  const { turnPhase, lastBattleRecord, activeEncounter } = useCombatStore();
-  const { addXp, addGold, progression } = usePlayerStore();
+  const { turnPhase, lastBattleRecord, activeEncounter, enemies } = useCombatStore();
+  const { claimEncounterRewards, progression } = usePlayerStore();
   const { setScene } = useGameStore();
 
-  const [rewardClaimed, setRewardClaimed] = useState(false);
+  const [claimResult, setClaimResult] = useState<EncounterRewardClaimResult | null>(null);
   const [flavorQuote, setFlavorQuote] = useState('');
   const [reportOpen, setReportOpen] = useState(false);
   const [chronicleOpen, setChronicleOpen] = useState(false);
@@ -29,17 +30,62 @@ export function GameOverModal({ onRestart }: GameOverModalProps) {
   const isDefeat = turnPhase === 'defeat';
 
   useEffect(() => {
-    if (isVictory && !rewardClaimed) {
-      addXp(activeEncounter.rewards.xp);
-      addGold(activeEncounter.rewards.gold);
-      setRewardClaimed(true);
-      const rand = VICTORY_BANTER[Math.floor(Math.random() * VICTORY_BANTER.length)];
-      setFlavorQuote(rand);
-    } else if (isDefeat && !flavorQuote) {
-      const rand = DEFEAT_BANTER[Math.floor(Math.random() * DEFEAT_BANTER.length)];
-      setFlavorQuote(rand);
+    if ((isVictory || isDefeat) && lastBattleRecord && !claimResult) {
+      const bossId = activeEncounter.enemies.find((e) => e.isBoss)?.bossId;
+      const isFirstBoss = Boolean(
+        isVictory && bossId && !progression.firstBossVictories.includes(bossId)
+      );
+      const xpEarned = calculateBattleXp({
+        outcome: lastBattleRecord.outcome,
+        baseEncounterXp: activeEncounter.rewards.xp,
+        difficulty: activeEncounter.difficulty,
+        enemiesDefeated:
+          lastBattleRecord.advancedCombat?.enemiesDefeated ??
+          enemies.filter((e) => e.entity.hp <= 0).length,
+        totalEnemies: lastBattleRecord.advancedCombat?.totalEnemies ?? enemies.length,
+        damageDealt: lastBattleRecord.combat.totalDamageDealt,
+        dodgesSucceeded: lastBattleRecord.advancedCombat?.successfulDodges ?? 0,
+        staggersTriggered: lastBattleRecord.advancedCombat?.enemiesStaggered ?? 0,
+        isFirstBossVictory: isFirstBoss,
+        bossFirstVictoryBonusXp: activeEncounter.firstVictoryRewards?.xp,
+      });
+
+      const goldEarned = isVictory
+        ? activeEncounter.rewards.gold +
+          (isFirstBoss ? activeEncounter.firstVictoryRewards?.gold ?? 0 : 0)
+        : 0;
+
+      const res = claimEncounterRewards({
+        battleId: lastBattleRecord.id,
+        encounterId: activeEncounter.id,
+        outcome: lastBattleRecord.outcome,
+        xpEarned,
+        goldEarned,
+        bossId,
+      });
+      setClaimResult(res);
+      if (res.leveledUp) {
+        soundEngine.playLevelUp();
+      }
+
+      if (isVictory) {
+        const rand = VICTORY_BANTER[Math.floor(Math.random() * VICTORY_BANTER.length)];
+        setFlavorQuote(rand);
+      } else {
+        const rand = DEFEAT_BANTER[Math.floor(Math.random() * DEFEAT_BANTER.length)];
+        setFlavorQuote(rand);
+      }
     }
-  }, [turnPhase, isVictory, isDefeat, rewardClaimed, flavorQuote, addXp, addGold, activeEncounter]);
+  }, [
+    isVictory,
+    isDefeat,
+    lastBattleRecord,
+    claimResult,
+    activeEncounter,
+    enemies,
+    progression.firstBossVictories,
+    claimEncounterRewards,
+  ]);
 
   useEffect(() => {
     if (lastBattleRecord) {
@@ -62,7 +108,7 @@ export function GameOverModal({ onRestart }: GameOverModalProps) {
   return (
     <div className="absolute inset-0 z-50 pointer-events-auto bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
       <div
-        className={`w-[500px] max-w-[96%] max-h-[92vh] overflow-y-auto p-6 text-center ${
+        className={`w-[520px] max-w-[96%] max-h-[92vh] overflow-y-auto p-6 text-center ${
           isVictory ? 'pixel-box-gold' : 'pixel-box border-red-700/80'
         } animate-in zoom-in-95`}
       >
@@ -83,9 +129,41 @@ export function GameOverModal({ onRestart }: GameOverModalProps) {
         </h2>
         <p className="text-xs font-pixel text-gray-400 mb-3">
           {isVictory
-            ? `${activeEncounter.name} has retreated in utter humiliation`
+            ? `${activeEncounter.name} has been vanquished`
             : `You were humbled by ${activeEncounter.name}`}
         </p>
+
+        {/* Level Up Celebration Banner */}
+        {claimResult?.leveledUp && (
+          <div className="mb-3 p-3 rounded bg-gradient-to-r from-purple-900/80 to-amber-900/50 border-2 border-amber-400 text-left animate-pulse">
+            <div className="font-pixel text-xs text-amber-300 flex items-center gap-1.5 mb-1">
+              <Sparkles size={14} /> LEVEL UP! LVL {claimResult.levelSummary.previousLevel} → LVL{' '}
+              {claimResult.levelSummary.newLevel}
+            </div>
+            <div className="font-lore text-xs text-purple-100 space-y-0.5">
+              <div>• +{claimResult.levelSummary.attributePointsEarned} Attribute Points earned</div>
+              {claimResult.levelSummary.unlockedSpells.length > 0 && (
+                <div>• Unlocked Spells: {claimResult.levelSummary.unlockedSpells.join(', ')}</div>
+              )}
+              {claimResult.levelSummary.unlockedEquipment.length > 0 && (
+                <div>
+                  • Unlocked Gear: {claimResult.levelSummary.unlockedEquipment.join(', ')}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Vorath / Boss First Victory Rewards */}
+        {claimResult?.isFirstBossVictory && (
+          <div className="mb-3 p-2.5 rounded bg-amber-500/15 border border-amber-400/70 font-pixel text-[9px] text-amber-200">
+            👑 FIRST BOSS VICTORY BONUS UNLOCKED!
+            {claimResult.unlockedBossSpells.length > 0 &&
+              ` Spell: ${claimResult.unlockedBossSpells.join(', ')}`}
+            {claimResult.unlockedBossItems.length > 0 &&
+              ` • Gear: ${claimResult.unlockedBossItems.join(', ')}`}
+          </div>
+        )}
 
         {newRecords.length > 0 && (
           <div className="mb-3 p-2 rounded bg-amber-500/15 border border-amber-400/60 flex items-center justify-center gap-2 font-pixel text-[9px] text-amber-300">
@@ -124,48 +202,23 @@ export function GameOverModal({ onRestart }: GameOverModalProps) {
               <span className="text-gray-500 block text-[8px]">HEALING</span>
               <span className="text-emerald-400">{lastBattleRecord.combat.totalHealingPerformed}</span>
             </div>
-            {lastBattleRecord.advancedCombat && (
-              <>
-                <div>
-                  <span className="text-gray-500 block text-[8px]">DODGES</span>
-                  <span className="text-sky-300">
-                    {lastBattleRecord.advancedCombat.successfulDodges}/
-                    {lastBattleRecord.advancedCombat.dodgeAttempts}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-gray-500 block text-[8px]">STAGGERS</span>
-                  <span className="text-yellow-300">
-                    {lastBattleRecord.advancedCombat.enemiesStaggered}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-gray-500 block text-[8px]">FOES SLAIN</span>
-                  <span className="text-rose-300">
-                    {lastBattleRecord.advancedCombat.enemiesDefeated}/
-                    {lastBattleRecord.advancedCombat.totalEnemies}
-                  </span>
-                </div>
-              </>
-            )}
           </div>
         )}
 
-        {isVictory && (
-          <div className="grid grid-cols-2 gap-3 p-3 bg-amber-950/30 rounded border border-amber-600/40 mb-5 font-pixel text-[11px]">
-            <div className="text-left">
-              <span className="text-gray-400 block text-[9px]">EXPERIENCE GAINED</span>
-              <span className="text-amber-300">+{activeEncounter.rewards.xp} XP</span>
-            </div>
-            <div className="text-right">
-              <span className="text-gray-400 block text-[9px]">LOOT EXTRACTED</span>
-              <span className="text-amber-300">+{activeEncounter.rewards.gold} GOLD</span>
-            </div>
-            <div className="col-span-2 pt-2 border-t border-amber-900/40 text-left text-[10px] text-gray-300">
-              CURRENT LEVEL: <span className="text-purple-300">{progression.level}</span>
-            </div>
+        <div className="grid grid-cols-2 gap-3 p-3 bg-amber-950/30 rounded border border-amber-600/40 mb-5 font-pixel text-[11px]">
+          <div className="text-left">
+            <span className="text-gray-400 block text-[9px]">EXPERIENCE GAINED</span>
+            <span className="text-amber-300">+{claimResult?.xpEarned ?? 0} XP</span>
           </div>
-        )}
+          <div className="text-right">
+            <span className="text-gray-400 block text-[9px]">LOOT EXTRACTED</span>
+            <span className="text-amber-300">+{claimResult?.goldEarned ?? 0} GOLD</span>
+          </div>
+          <div className="col-span-2 pt-2 border-t border-amber-900/40 text-left text-[10px] text-gray-300">
+            LEVEL: <span className="text-purple-300">{progression.level}</span> ({progression.currentXp}/
+            {progression.xpToNextLevel || 'MAX'} XP)
+          </div>
+        </div>
 
         <div className="flex flex-col gap-2 font-pixel text-xs">
           {lastBattleRecord && (
@@ -199,13 +252,13 @@ export function GameOverModal({ onRestart }: GameOverModalProps) {
             type="button"
             onClick={() => {
               soundEngine.playClick();
-              setRewardClaimed(false);
+              setClaimResult(null);
               onRestart();
             }}
             className="pixel-btn py-3 px-4 flex items-center justify-center gap-2 cursor-pointer hover:scale-105 active:scale-95"
           >
             <RotateCcw size={16} />
-            <span>{isVictory ? 'DUEL AGAIN (RUB IT IN)' : 'DEMAND REMATCH (FILE APPEAL)'}</span>
+            <span>{isVictory ? 'DUEL AGAIN' : 'DEMAND REMATCH'}</span>
           </button>
 
           <button

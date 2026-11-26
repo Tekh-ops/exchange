@@ -123,6 +123,44 @@ export function initPixelTextures(): void {
     ctx.fillRect(12, 6, 3, 3);
   });
 
+  // 2b. Vorath — The Eternal Arcanist (Legendary Boss Sprite, 80x80)
+  TextureCache['enemy_vorath'] = createPixelTexture(80, 80, (ctx) => {
+    ctx.fillStyle = '#1e0b36';
+    ctx.fillRect(20, 30, 40, 44);
+    ctx.fillStyle = '#2e1065';
+    ctx.fillRect(25, 28, 30, 40);
+    ctx.fillStyle = '#d4af37';
+    ctx.fillRect(16, 28, 10, 8);
+    ctx.fillRect(54, 28, 10, 8);
+    ctx.fillRect(36, 32, 8, 36);
+    ctx.fillRect(20, 72, 40, 3);
+
+    ctx.fillStyle = '#facc15';
+    ctx.fillRect(28, 10, 24, 4);
+    ctx.fillRect(26, 4, 4, 8);
+    ctx.fillRect(38, 2, 4, 10);
+    ctx.fillRect(50, 4, 4, 8);
+
+    ctx.fillStyle = '#090414';
+    ctx.fillRect(28, 14, 24, 16);
+    ctx.fillStyle = '#fde047';
+    ctx.fillRect(32, 20, 5, 3);
+    ctx.fillRect(43, 20, 5, 3);
+
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillRect(10, 18, 4, 4);
+    ctx.fillRect(66, 20, 4, 4);
+    ctx.fillRect(12, 48, 3, 3);
+    ctx.fillRect(65, 50, 3, 3);
+
+    ctx.fillStyle = '#581c87';
+    ctx.fillRect(10, 14, 4, 58);
+    ctx.fillStyle = '#fbbf24';
+    ctx.fillRect(7, 6, 10, 10);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(10, 9, 4, 4);
+  });
+
   // 3. Projectile - Arcane Bolt
   TextureCache['proj_arcane'] = createPixelTexture(16, 16, (ctx) => {
     ctx.fillStyle = '#a855f7';

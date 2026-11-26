@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { usePlayerStore } from '../stores/playerStore';
+import { SPELL_UNLOCK_LEVELS } from '../progression/progressionRules';
 import { soundEngine } from '../voice/soundEngine';
-import { BookOpen, CheckCircle2, Circle, Sparkles, X, Zap } from 'lucide-react';
+import { BookOpen, CheckCircle2, Circle, Lock, Sparkles, X, Zap } from 'lucide-react';
 
 interface SpellPreparationModalProps {
   isOpen: boolean;
@@ -11,6 +12,7 @@ interface SpellPreparationModalProps {
 export function SpellPreparationModal({ isOpen, onClose }: SpellPreparationModalProps) {
   const {
     spells,
+    progression,
     preparedSpellIds,
     getMaxPreparedSpells,
     togglePrepareSpell,
@@ -68,21 +70,28 @@ export function SpellPreparationModal({ isOpen, onClose }: SpellPreparationModal
 
         <div className="flex-1 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-2.5 pr-1">
           {spells.map((spell) => {
+            const isUnlocked = progression.unlockedSpellIds.includes(spell.id);
             const isPrepared = preparedSpellIds.includes(spell.id);
+            const reqLvl = SPELL_UNLOCK_LEVELS[spell.id];
             return (
               <button
                 key={spell.id}
                 type="button"
+                disabled={!isUnlocked}
                 onClick={() => handleToggle(spell.id)}
-                className={`p-3 rounded border text-left transition cursor-pointer ${
-                  isPrepared
-                    ? 'bg-purple-900/40 border-amber-400/80'
-                    : 'bg-[#100a1d] border-purple-900/50 hover:border-purple-600'
+                className={`p-3 rounded border text-left transition ${
+                  !isUnlocked
+                    ? 'bg-[#0b0714] border-gray-800 opacity-55 cursor-not-allowed'
+                    : isPrepared
+                    ? 'bg-purple-900/40 border-amber-400/80 cursor-pointer'
+                    : 'bg-[#100a1d] border-purple-900/50 hover:border-purple-600 cursor-pointer'
                 }`}
               >
                 <div className="flex items-center justify-between mb-1">
                   <span className="font-pixel text-[10px] text-amber-300 flex items-center gap-1.5">
-                    {isPrepared ? (
+                    {!isUnlocked ? (
+                      <Lock size={13} className="text-gray-500" />
+                    ) : isPrepared ? (
                       <CheckCircle2 size={13} className="text-emerald-400" />
                     ) : (
                       <Circle size={13} className="text-gray-500" />
@@ -90,7 +99,13 @@ export function SpellPreparationModal({ isOpen, onClose }: SpellPreparationModal
                     {spell.name}
                   </span>
                   <span className="font-pixel text-[9px] text-blue-400">
-                    {spell.manaCost > 0 ? `${spell.manaCost} MP` : '0 MP'}
+                    {!isUnlocked
+                      ? reqLvl
+                        ? `LVL ${reqLvl}`
+                        : 'VORATH'
+                      : spell.manaCost > 0
+                      ? `${spell.manaCost} MP`
+                      : '0 MP'}
                   </span>
                 </div>
 

@@ -181,6 +181,29 @@ export const ALL_SPELLS: Record<string, Spell> = {
       { type: 'reversal_heal', value: 60 }, // 60% of recent damage taken
     ],
   },
+  eternal_annihilation: {
+    id: 'eternal_annihilation',
+    name: 'Eternal Annihilation',
+    description: 'Vorath’s forbidden arcana: blasts all foes with devastating arcane force and heavy posture break.',
+    pettyComment: '"I learned this from an immortal arcanist. Mostly out of spite."',
+    element: 'arcane',
+    isOffensive: true,
+    manaCost: 42,
+    cooldownTurns: 3,
+    currentCooldown: 0,
+    castAnimation: 'missile',
+    projectileType: 'arcane_bolt',
+    targetRule: 'all_enemies',
+    postureDamage: 38,
+    chargeable: true,
+    chargeManaBonus: 18,
+    chargeDamageMultiplier: 1.6,
+    chargeTargetRule: 'all_enemies',
+    synergyHint: 'Earned by defeating Vorath. Hits ALL enemies with massive posture break.',
+    effects: [
+      { type: 'damage', value: 78 },
+    ],
+  },
 };
 
 export function getInitialSpellbook(): Spell[] {

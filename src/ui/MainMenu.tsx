@@ -7,6 +7,7 @@ import { soundEngine } from '../voice/soundEngine';
 import { SettingsModal } from './SettingsModal';
 import { GrimoireModal } from './GrimoireModal';
 import { SpellPreparationModal } from './SpellPreparationModal';
+import { CharacterProfileModal } from './CharacterProfileModal';
 import { BattleChronicle } from './BattleChronicle';
 import { PlayerStatistics } from './PlayerStatistics';
 import { BattleLeaderboards } from './BattleLeaderboards';
@@ -21,6 +22,11 @@ import {
   BarChart3,
   Award,
   Wand2,
+  User,
+  Crown,
+  Lock,
+  AlertTriangle,
+  CheckCircle2,
 } from 'lucide-react';
 
 export function MainMenu() {
@@ -32,6 +38,7 @@ export function MainMenu() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [grimoireOpen, setGrimoireOpen] = useState(false);
   const [prepOpen, setPrepOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [loreOpen, setLoreOpen] = useState(false);
   const [chronicleOpen, setChronicleOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
@@ -39,8 +46,14 @@ export function MainMenu() {
 
   const encounterList = Object.values(ENCOUNTERS);
   const activeEnc = ENCOUNTERS[selectedEncounterId] || ENCOUNTERS.solo_malakor;
+  const { progression } = playerStore;
+
+  const isLocked = Boolean(activeEnc.minLevel && progression.level < activeEnc.minLevel);
+  const bossId = activeEnc.enemies.find((e) => e.isBoss)?.bossId;
+  const alreadyDefeated = Boolean(bossId && progression.firstBossVictories.includes(bossId));
 
   const handleStartGame = () => {
+    if (isLocked) return;
     soundEngine.playClick();
     initBattle(
       playerStore.getTotalMaxHp(),
@@ -54,40 +67,61 @@ export function MainMenu() {
         dodgeEfficiencyBonus: playerStore.getDodgeEfficiencyBonus(),
         postureDamageMultiplier: playerStore.getPostureDamageMultiplier(),
         healingBonusMultiplier: playerStore.getHealingBonusMultiplier(),
+        synergyBonusMultiplier: playerStore.getSynergyBonusMultiplier(),
+        damageReduction: playerStore.getDamageReduction(),
+        manaRegenBonus: playerStore.getManaRegenBonus(),
+        manaCostReduction: Math.min(4, Math.floor(Math.max(0, progression.attributes.intelligence - 1) / 3)),
+        playerLevel: progression.level,
       }
     );
     setScene('battle');
   };
 
   return (
-    <div className="relative w-full h-full flex flex-col items-center justify-center p-6 bg-[#080511] overflow-y-auto select-none">
+    <div className="relative w-full h-full flex flex-col items-center justify-center p-5 bg-[#080511] overflow-y-auto select-none">
       <div className="absolute inset-0 pointer-events-none opacity-40">
         <div className="absolute top-1/4 left-1/3 w-96 h-96 bg-purple-900/30 rounded-full blur-3xl animate-pulse" />
         <div className="absolute bottom-1/4 right-1/3 w-96 h-96 bg-amber-900/20 rounded-full blur-3xl animate-pulse" />
       </div>
 
       <div className="relative z-10 max-w-xl w-full text-center flex flex-col items-center">
-        <div className="w-14 h-14 rounded-2xl pixel-box-gold flex items-center justify-center mb-4 shadow-2xl animate-bounce">
-          <Sparkles className="text-amber-400" size={28} />
+        <div className="w-12 h-12 rounded-2xl pixel-box-gold flex items-center justify-center mb-3 shadow-2xl animate-bounce">
+          <Sparkles className="text-amber-400" size={24} />
         </div>
 
-        <h1 className="font-pixel text-2xl sm:text-4xl text-amber-300 tracking-wider mb-1.5 drop-shadow-[0_4px_12px_rgba(212,175,55,0.4)]">
+        <h1 className="font-pixel text-2xl sm:text-4xl text-amber-300 tracking-wider mb-1 drop-shadow-[0_4px_12px_rgba(212,175,55,0.4)]">
           THE PETTY SORCERER
         </h1>
 
-        <p className="font-lore text-base sm:text-lg text-purple-200/90 mb-1">
+        <p className="font-lore text-base text-purple-200/90 mb-1">
           Every Spell Leaves a Memory
         </p>
 
-        <p className="font-pixel text-[9px] text-gray-500 mb-5 tracking-widest uppercase">
-          960 × 540 • Adaptive Tactical Wizard Combat
+        <p className="font-pixel text-[9px] text-amber-200/80 mb-4 tracking-widest uppercase">
+          LVL {progression.level} • {progression.currentXp}/{progression.xpToNextLevel || 'MAX'} XP •{' '}
+          {progression.gold} GOLD
         </p>
 
-        {/* Encounter Selector */}
-        <div className="w-80 sm:w-96 pixel-box p-3 bg-[#120b21]/90 border border-purple-700/60 mb-4 text-left">
-          <label className="font-pixel text-[9px] text-amber-300 block mb-1.5">
-            SELECT ENCOUNTER
-          </label>
+        {/* Encounter & Boss Selector */}
+        <div
+          className={`w-80 sm:w-[440px] pixel-box p-3 mb-4 text-left ${
+            activeEnc.isLegendaryBoss
+              ? 'bg-[#1a0a2e]/95 border-amber-400/80'
+              : 'bg-[#120b21]/90 border-purple-700/60'
+          }`}
+        >
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="font-pixel text-[9px] text-amber-300 flex items-center gap-1.5">
+              {activeEnc.isLegendaryBoss && <Crown size={12} className="text-amber-300" />}
+              SELECT ENCOUNTER
+            </label>
+            {alreadyDefeated && (
+              <span className="font-pixel text-[8px] text-emerald-400 flex items-center gap-1">
+                <CheckCircle2 size={10} /> DEFEATED
+              </span>
+            )}
+          </div>
+
           <select
             value={selectedEncounterId}
             onChange={(e) => {
@@ -98,23 +132,66 @@ export function MainMenu() {
           >
             {encounterList.map((enc) => (
               <option key={enc.id} value={enc.id}>
-                [{enc.difficulty.toUpperCase()}] {enc.name} ({enc.enemies.length}{' '}
-                {enc.enemies.length === 1 ? 'foe' : 'foes'})
+                [{enc.difficulty.toUpperCase()}] {enc.name}
+                {enc.recommendedLevel ? ` (Rec Lv.${enc.recommendedLevel})` : ''}
               </option>
             ))}
           </select>
-          <p className="font-lore text-xs text-gray-400 mt-1.5">{activeEnc.description}</p>
+
+          <p className="font-lore text-xs text-gray-300 mt-1.5">{activeEnc.description}</p>
+
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 font-pixel text-[8px] text-purple-200">
+            <span>
+              REWARD: +{activeEnc.rewards.xp} XP, +{activeEnc.rewards.gold}G
+              {!alreadyDefeated && activeEnc.firstVictoryRewards
+                ? ` (+${activeEnc.firstVictoryRewards.xp} FIRST CLEAR!)`
+                : ''}
+            </span>
+            {activeEnc.recommendedLevel && (
+              <span className="text-amber-300">REC LVL {activeEnc.recommendedLevel}</span>
+            )}
+          </div>
+
+          {activeEnc.warningText && (
+            <div className="mt-2 p-2 rounded bg-amber-950/50 border border-amber-500/60 font-lore text-[11px] text-amber-200 flex items-start gap-1.5">
+              <AlertTriangle size={14} className="text-amber-400 shrink-0 mt-0.5" />
+              <span>{activeEnc.warningText}</span>
+            </div>
+          )}
+
+          {isLocked && (
+            <div className="mt-2 p-2 rounded bg-red-950/60 border border-red-600/60 font-pixel text-[8px] text-red-300 flex items-center gap-1.5">
+              <Lock size={12} />
+              <span>UNLOCKS AT PLAYER LEVEL {activeEnc.minLevel}</span>
+            </div>
+          )}
         </div>
 
         {/* Menu Actions */}
-        <div className="w-80 space-y-2.5 font-pixel text-xs relative z-20">
+        <div className="w-80 space-y-2 font-pixel text-xs relative z-20">
           <button
             type="button"
+            disabled={isLocked}
             onClick={handleStartGame}
-            className="pixel-btn w-full py-3.5 px-4 flex items-center justify-center gap-2.5 text-amber-300 border-amber-600 cursor-pointer hover:scale-105 active:scale-95 transition"
+            className="pixel-btn w-full py-3 px-4 flex items-center justify-center gap-2.5 text-amber-300 border-amber-600 cursor-pointer hover:scale-105 active:scale-95 transition disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Swords size={16} />
-            <span>ENTER ARENA</span>
+            <span>{isLocked ? `LOCKED (LVL ${activeEnc.minLevel})` : 'ENTER ARENA'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              soundEngine.playClick();
+              setProfileOpen(true);
+            }}
+            className="pixel-btn w-full py-2.5 px-4 flex items-center justify-center gap-2 text-emerald-300 border-emerald-700/70 cursor-pointer hover:scale-105 active:scale-95 transition"
+          >
+            <User size={15} />
+            <span>
+              CHARACTER PROFILE
+              {progression.attributePoints > 0 ? ` (${progression.attributePoints} PTS!)` : ''}
+            </span>
           </button>
 
           <div className="grid grid-cols-2 gap-2">
@@ -124,10 +201,10 @@ export function MainMenu() {
                 soundEngine.playClick();
                 setPrepOpen(true);
               }}
-              className="pixel-btn py-2.5 px-2 flex items-center justify-center gap-1.5 text-[10px] text-purple-200 cursor-pointer hover:scale-105 active:scale-95 transition"
+              className="pixel-btn py-2 px-2 flex items-center justify-center gap-1.5 text-[10px] text-purple-200 cursor-pointer hover:scale-105 active:scale-95 transition"
             >
               <Wand2 size={14} />
-              <span>PREPARE SPELLS</span>
+              <span>PREPARE</span>
             </button>
 
             <button
@@ -136,7 +213,7 @@ export function MainMenu() {
                 soundEngine.playClick();
                 setGrimoireOpen(true);
               }}
-              className="pixel-btn py-2.5 px-2 flex items-center justify-center gap-1.5 text-[10px] text-gray-200 cursor-pointer hover:scale-105 active:scale-95 transition"
+              className="pixel-btn py-2 px-2 flex items-center justify-center gap-1.5 text-[10px] text-gray-200 cursor-pointer hover:scale-105 active:scale-95 transition"
             >
               <BookOpen size={14} />
               <span>GRIMOIRE</span>
@@ -149,9 +226,9 @@ export function MainMenu() {
               soundEngine.playClick();
               setChronicleOpen(true);
             }}
-            className="pixel-btn w-full py-2.5 px-4 flex items-center justify-center gap-2.5 text-purple-200 cursor-pointer hover:scale-105 active:scale-95 transition"
+            className="pixel-btn w-full py-2 px-4 flex items-center justify-center gap-2 text-[10px] text-purple-200 cursor-pointer hover:scale-105 active:scale-95 transition"
           >
-            <Scroll size={16} />
+            <Scroll size={14} />
             <span>BATTLE CHRONICLE</span>
           </button>
 
@@ -162,7 +239,7 @@ export function MainMenu() {
                 soundEngine.playClick();
                 setStatsOpen(true);
               }}
-              className="pixel-btn py-2.5 px-2 flex items-center justify-center gap-1.5 text-[10px] text-gray-200 cursor-pointer hover:scale-105 active:scale-95 transition"
+              className="pixel-btn py-2 px-2 flex items-center justify-center gap-1.5 text-[10px] text-gray-200 cursor-pointer hover:scale-105 active:scale-95 transition"
             >
               <BarChart3 size={14} />
               <span>STATISTICS</span>
@@ -174,7 +251,7 @@ export function MainMenu() {
                 soundEngine.playClick();
                 setLeaderboardsOpen(true);
               }}
-              className="pixel-btn py-2.5 px-2 flex items-center justify-center gap-1.5 text-[10px] text-amber-200 cursor-pointer hover:scale-105 active:scale-95 transition"
+              className="pixel-btn py-2 px-2 flex items-center justify-center gap-1.5 text-[10px] text-amber-200 cursor-pointer hover:scale-105 active:scale-95 transition"
             >
               <Award size={14} />
               <span>RECORDS</span>
@@ -188,7 +265,7 @@ export function MainMenu() {
                 soundEngine.playClick();
                 setLoreOpen(true);
               }}
-              className="pixel-btn py-2.5 px-2 flex items-center justify-center gap-1.5 text-[10px] text-gray-200 cursor-pointer hover:scale-105 active:scale-95 transition"
+              className="pixel-btn py-2 px-2 flex items-center justify-center gap-1.5 text-[10px] text-gray-200 cursor-pointer hover:scale-105 active:scale-95 transition"
             >
               <ScrollText size={14} />
               <span>LORE</span>
@@ -200,22 +277,19 @@ export function MainMenu() {
                 soundEngine.playClick();
                 setSettingsOpen(true);
               }}
-              className="pixel-btn py-2.5 px-2 flex items-center justify-center gap-1.5 text-[10px] text-gray-300 cursor-pointer hover:scale-105 active:scale-95 transition"
+              className="pixel-btn py-2 px-2 flex items-center justify-center gap-1.5 text-[10px] text-gray-300 cursor-pointer hover:scale-105 active:scale-95 transition"
             >
               <Sliders size={14} />
               <span>SETTINGS</span>
             </button>
           </div>
         </div>
-
-        <div className="mt-6 font-lore text-xs text-gray-500 max-w-md">
-          "Never underestimate a wizard with an unreviewed dissertation and far too much spare time."
-        </div>
       </div>
 
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <GrimoireModal isOpen={grimoireOpen} onClose={() => setGrimoireOpen(false)} />
       <SpellPreparationModal isOpen={prepOpen} onClose={() => setPrepOpen(false)} />
+      <CharacterProfileModal isOpen={profileOpen} onClose={() => setProfileOpen(false)} />
       <BattleChronicle isOpen={chronicleOpen} onClose={() => setChronicleOpen(false)} />
       <PlayerStatistics isOpen={statsOpen} onClose={() => setStatsOpen(false)} />
       <BattleLeaderboards isOpen={leaderboardsOpen} onClose={() => setLeaderboardsOpen(false)} />
@@ -246,9 +320,6 @@ export function MainMenu() {
                 The Petty Sorcerer has achieved none of these. Instead, he has spent forty-three years specializing exclusively in{' '}
                 <strong className="text-purple-300">Minor Kinetic Irritations</strong> and{' '}
                 <strong className="text-purple-300">Curses of Social Discomfort</strong>.
-              </p>
-              <p>
-                Earlier this afternoon, Arch-Mage Malakor failed to acknowledge him in the enchanted hallway, took the last buttered scone from the high table, and omitted his paper from the footnote of the Citadel Quarterly.
               </p>
               <p className="text-amber-300 font-pixel text-xs pt-2 border-t border-purple-900/60">
                 BLOOD SHALL PAY FOR SCONES.

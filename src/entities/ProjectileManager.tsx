@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { Graphics as PixiGraphics } from 'pixi.js';
 import { useTick } from '@pixi/react';
 import { gameEvents } from '../engine/eventBus';
@@ -21,22 +21,19 @@ interface Explosion {
 }
 
 export function ProjectileManager() {
-  const [projectiles, setProjectiles] = useState<ActiveProjectile[]>([]);
+  const projectilesRef = useRef<ActiveProjectile[]>([]);
   const explosionsRef = useRef<Explosion[]>([]);
   const graphicsRef = useRef<PixiGraphics | null>(null);
 
   // Subscribe to fired projectiles
   useEffect(() => {
     const unsub = gameEvents.on('PROJECTILE_FIRED', (payload) => {
-      setProjectiles((prev) => [
-        ...prev,
-        {
-          ...payload,
-          currentX: payload.startX,
-          currentY: payload.startY,
-          trail: [],
-        },
-      ]);
+      projectilesRef.current.push({
+        ...payload,
+        currentX: payload.startX,
+        currentY: payload.startY,
+        trail: [],
+      });
     });
     return () => unsub();
   }, []);
@@ -54,21 +51,20 @@ export function ProjectileManager() {
       }))
       .filter((exp) => exp.alpha > 0);
 
-    // Update projectiles
-    setProjectiles((prev) => {
-      if (prev.length === 0) return prev;
+    // Update projectiles and fire onHit callbacks cleanly outside React setState
+    if (projectilesRef.current.length > 0) {
       const updated: ActiveProjectile[] = [];
+      const hitsToFire: (() => void)[] = [];
 
-      prev.forEach((p) => {
+      projectilesRef.current.forEach((p) => {
         const dx = p.targetX - p.currentX;
         const dy = p.targetY - p.currentY;
         const dist = Math.hypot(dx, dy);
 
         // Arrived at target
         if (dist <= p.speed * dt * 1.5) {
-          // Trigger impact callback
           if (p.onHit) {
-            p.onHit();
+            hitsToFire.push(p.onHit);
           }
 
           // Spawn impact explosion ring
@@ -102,8 +98,9 @@ export function ProjectileManager() {
         }
       });
 
-      return updated;
-    });
+      projectilesRef.current = updated;
+      hitsToFire.forEach((cb) => cb());
+    }
 
     // Draw active projectiles and explosions
     if (graphicsRef.current) {
@@ -119,7 +116,7 @@ export function ProjectileManager() {
       });
 
       // Render projectiles
-      projectiles.forEach((p) => {
+      projectilesRef.current.forEach((p) => {
         // Draw trail
         p.trail.forEach((t) => {
           g.circle(t.x, t.y, 4);

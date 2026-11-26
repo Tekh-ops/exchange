@@ -1,10 +1,33 @@
 export type VoicePermissionStatus = 'prompt' | 'granted' | 'denied' | 'unsupported';
+export type VoiceSessionState = 'inactive' | 'listening' | 'recognizing' | 'denied' | 'unsupported' | 'error';
+
+interface SpeechRecognitionAlternative {
+  transcript: string;
+  confidence: number;
+}
+
+interface SpeechRecognitionResult {
+  isFinal: boolean;
+  length: number;
+  [altIndex: number]: SpeechRecognitionAlternative;
+}
+
+interface SpeechRecognitionResultEvent {
+  resultIndex?: number;
+  results: {
+    length: number;
+    [index: number]: SpeechRecognitionResult;
+  };
+}
 
 interface SpeechRecognitionInstance {
   lang: string;
   interimResults: boolean;
   maxAlternatives: number;
   continuous: boolean;
+  onstart: (() => void) | null;
+  onaudiostart: (() => void) | null;
+  onspeechstart: (() => void) | null;
   onresult: ((event: SpeechRecognitionResultEvent) => void) | null;
   onerror: ((event: { error: string }) => void) | null;
   onend: (() => void) | null;
@@ -13,19 +36,10 @@ interface SpeechRecognitionInstance {
   abort: () => void;
 }
 
-interface SpeechRecognitionResultEvent {
-  results: {
-    length: number;
-    [index: number]: {
-      isFinal: boolean;
-      [altIndex: number]: { transcript: string; confidence: number };
-    };
-  };
-}
-
 export class VoiceCommandManager {
   private recognition: SpeechRecognitionInstance | null = null;
   private listening = false;
+  private sessionId = 0;
   private permissionStatus: VoicePermissionStatus = 'unsupported';
 
   constructor() {
@@ -48,21 +62,43 @@ export class VoiceCommandManager {
     return this.listening;
   }
 
+  private cleanupRecognition(rec: SpeechRecognitionInstance | null): void {
+    if (!rec) return;
+    rec.onstart = null;
+    rec.onaudiostart = null;
+    rec.onspeechstart = null;
+    rec.onresult = null;
+    rec.onerror = null;
+    rec.onend = null;
+  }
+
   public startListening(
     language: string,
     callbacks: {
-      onTranscript: (transcript: string, isFinal: boolean) => void;
-      onError: (message: string) => void;
+      onStateChange?: (state: VoiceSessionState) => void;
+      onTranscript: (transcript: string, isFinal: boolean, alternatives: string[]) => void;
+      onError: (message: string, code?: string) => void;
       onEnd: () => void;
     }
   ): boolean {
     if (!this.isSupported()) {
       this.permissionStatus = 'unsupported';
-      callbacks.onError('Voice casting is not supported in this browser. Use mouse or hotkeys.');
+      callbacks.onStateChange?.('unsupported');
+      callbacks.onError(
+        'Voice casting is not supported in this browser (requires Chrome, Edge, or Safari SpeechRecognition). Use mouse or keys 1-6.',
+        'unsupported'
+      );
       return false;
     }
 
-    if (this.listening) return true;
+    // Prevent multiple simultaneous recognition sessions
+    if (this.listening) {
+      return false;
+    }
+
+    this.sessionId += 1;
+    const activeSession = this.sessionId;
+    let finalDispatched = false;
 
     try {
       const w = window as unknown as Record<string, new () => SpeechRecognitionInstance>;
@@ -73,64 +109,118 @@ export class VoiceCommandManager {
       rec.maxAlternatives = 3;
       rec.continuous = false;
 
+      rec.onstart = () => {
+        if (activeSession !== this.sessionId) return;
+        this.permissionStatus = 'granted';
+        callbacks.onStateChange?.('listening');
+      };
+
+      rec.onspeechstart = () => {
+        if (activeSession !== this.sessionId) return;
+        callbacks.onStateChange?.('recognizing');
+      };
+
       rec.onresult = (event) => {
+        if (activeSession !== this.sessionId || finalDispatched) return;
         const lastIdx = event.results.length - 1;
-        if (lastIdx >= 0) {
-          const result = event.results[lastIdx];
-          const text = result[0]?.transcript || '';
-          this.permissionStatus = 'granted';
-          callbacks.onTranscript(text, result.isFinal);
+        if (lastIdx < 0) return;
+
+        const result = event.results[lastIdx];
+        const alternatives: string[] = [];
+        const altCount = result.length ?? 1;
+        for (let i = 0; i < altCount; i++) {
+          const t = result[i]?.transcript?.trim();
+          if (t) alternatives.push(t);
         }
+
+        const primaryText = alternatives[0] || '';
+        this.permissionStatus = 'granted';
+
+        if (result.isFinal) {
+          finalDispatched = true;
+        } else {
+          callbacks.onStateChange?.('recognizing');
+        }
+
+        callbacks.onTranscript(primaryText, Boolean(result.isFinal), alternatives);
       };
 
       rec.onerror = (event) => {
+        if (activeSession !== this.sessionId) return;
         this.listening = false;
+        this.cleanupRecognition(rec);
+        this.recognition = null;
+
         if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
           this.permissionStatus = 'denied';
-          callbacks.onError('Microphone permission denied. You can still cast spells with mouse or keys 1-6.');
+          callbacks.onStateChange?.('denied');
+          callbacks.onError(
+            'Microphone permission denied. Allow microphone access in browser settings or use mouse/keys 1-6.',
+            event.error
+          );
         } else if (event.error === 'no-speech') {
-          callbacks.onError('No speech detected. Hold and speak a spell name clearly.');
+          callbacks.onStateChange?.('inactive');
+          callbacks.onError('No speech detected. Press Voice Cast and speak a spell name clearly.', 'no-speech');
+        } else if (event.error === 'aborted') {
+          callbacks.onStateChange?.('inactive');
         } else {
-          callbacks.onError(`Voice recognition error: ${event.error}`);
+          callbacks.onStateChange?.('error');
+          callbacks.onError(`Voice recognition error: ${event.error}`, event.error);
         }
       };
 
       rec.onend = () => {
+        if (activeSession !== this.sessionId) return;
         this.listening = false;
+        this.cleanupRecognition(rec);
+        this.recognition = null;
+        callbacks.onStateChange?.('inactive');
         callbacks.onEnd();
       };
 
       this.recognition = rec;
       this.listening = true;
+      callbacks.onStateChange?.('listening');
       rec.start();
       return true;
     } catch {
       this.listening = false;
-      callbacks.onError('Unable to initialize browser speech recognition.');
+      this.cleanupRecognition(this.recognition);
+      this.recognition = null;
+      callbacks.onStateChange?.('error');
+      callbacks.onError('Unable to initialize browser speech recognition.', 'init-failed');
       return false;
     }
   }
 
   public stopListening(): void {
-    if (this.recognition && this.listening) {
+    const rec = this.recognition;
+    if (rec && this.listening) {
       try {
-        this.recognition.stop();
+        rec.stop();
       } catch {
-        // Ignored
+        this.listening = false;
+        this.cleanupRecognition(rec);
+        this.recognition = null;
       }
+    } else {
+      this.listening = false;
     }
-    this.listening = false;
   }
 
   public cancel(): void {
-    if (this.recognition && this.listening) {
+    this.sessionId += 1;
+    const rec = this.recognition;
+    this.recognition = null;
+    this.listening = false;
+    if (rec) {
+      this.cleanupRecognition(rec);
       try {
-        this.recognition.abort();
+        rec.abort();
       } catch {
         // Ignored
       }
     }
-    this.listening = false;
   }
 }
 

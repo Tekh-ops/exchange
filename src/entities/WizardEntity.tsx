@@ -58,8 +58,8 @@ export function WizardEntity({ type, entity, baseX, baseY }: WizardEntityProps) 
     let offsetX = 0;
     let offsetY = 0;
     let rotation = 0;
-    let scaleY = 2.4;
-    const scaleX = type === 'player' ? 2.4 : -2.4; // Enemy faces left
+    let scaleY = entity.bossId === 'vorath' ? 2.65 : 2.4;
+    const scaleX = type === 'player' ? 2.4 : entity.bossId === 'vorath' ? -2.65 : -2.4; // Enemy faces left
 
     const effectiveState = entity.hp <= 0 ? 'defeat' : animState;
 
@@ -303,9 +303,12 @@ export function WizardEntity({ type, entity, baseX, baseY }: WizardEntityProps) 
     }
   });
 
-  const texture = type === 'player' 
-    ? TextureCache['player_sorcerer'] 
-    : TextureCache['enemy_malakor'];
+  const texture =
+    type === 'player'
+      ? TextureCache['player_sorcerer']
+      : entity.bossId === 'vorath' && TextureCache['enemy_vorath']
+      ? TextureCache['enemy_vorath']
+      : TextureCache['enemy_malakor'];
 
   return (
     <pixiContainer ref={containerRef} x={baseX} y={baseY}>

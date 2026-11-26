@@ -121,3 +121,22 @@ export const DEFEAT_BANTER: string[] = [
   'A minor technicality! The floor had uneven tile mortar!',
   'I shall return once I file an official grievance with the Magistrate!',
 ];
+
+export function getVorathAdaptiveBanter(memory: {
+  totalEncounters: number;
+  victories: number;
+  defeats: number;
+  grudgeLevel: number;
+  favoriteElementCountered?: string;
+}): string {
+  if (memory.totalEncounters === 0) {
+    return 'You dare step into the Astral Sanctum, mortal? Your petty sparks will be unmade before the End of Ages.';
+  }
+  const fav = memory.favoriteElementCountered
+    ? ` I still taste your ${memory.favoriteElementCountered.toUpperCase()} incantations from our past.`
+    : '';
+  if (memory.defeats > 0) {
+    return `You struck me down before, little sorcerer (Grudge Lv.${memory.grudgeLevel}).${fav} The Eternal Crown does not forget.`;
+  }
+  return `Back again after ${memory.victories} defeat${memory.victories === 1 ? '' : 's'}?${fav} Time itself bends to my wards.`;
+}

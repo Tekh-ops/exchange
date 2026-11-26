@@ -70,6 +70,14 @@ export function BattleHUD() {
         dodgeEfficiencyBonus: playerStore.getDodgeEfficiencyBonus(),
         postureDamageMultiplier: playerStore.getPostureDamageMultiplier(),
         healingBonusMultiplier: playerStore.getHealingBonusMultiplier(),
+        synergyBonusMultiplier: playerStore.getSynergyBonusMultiplier(),
+        damageReduction: playerStore.getDamageReduction(),
+        manaRegenBonus: playerStore.getManaRegenBonus(),
+        manaCostReduction: Math.min(
+          4,
+          Math.floor(Math.max(0, playerStore.progression.attributes.intelligence - 1) / 3)
+        ),
+        playerLevel: playerStore.progression.level,
       }
     );
   };
@@ -116,7 +124,9 @@ export function BattleHUD() {
         {/* Player Stats Panel */}
         <div className="pixel-box p-2.5 w-72 bg-[#130d22]/90 border border-purple-500/60">
           <div className="flex items-center justify-between mb-1">
-            <span className="font-pixel text-[11px] text-amber-300">{player.name}</span>
+            <span className="font-pixel text-[11px] text-amber-300">
+              {player.name} <span className="text-[9px] text-purple-300">LV.{playerStore.progression.level}</span>
+            </span>
             <div className="flex items-center gap-1">
               <span className="font-pixel text-[8px] text-purple-200 px-1.5 py-0.5 rounded bg-purple-950/80 border border-purple-700/60 uppercase">
                 {player.lane ?? 'center'}

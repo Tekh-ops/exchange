@@ -14,6 +14,8 @@ export interface EquipmentItem {
   postureDamageMultiplier?: number;
   healingBonusMultiplier?: number;
   extraSpellSlots?: number;
+  minLevel?: number;
+  rarity?: 'common' | 'rare' | 'legendary';
 }
 
 export const INITIAL_EQUIPMENT: EquipmentItem[] = [
@@ -79,6 +81,8 @@ export const ALTERNATE_EQUIPMENT: EquipmentItem[] = [
     bonusSpellPower: 20,
     bonusCritRate: 0.15,
     chargeCostReduction: 5,
+    minLevel: 3,
+    rarity: 'rare',
     pettyFlavor: 'Glass cannons are still cannons.',
   },
   {
@@ -91,6 +95,24 @@ export const ALTERNATE_EQUIPMENT: EquipmentItem[] = [
     bonusSpellPower: 4,
     bonusCritRate: 0.08,
     dodgeEfficiencyBonus: 0.18,
+    minLevel: 4,
+    rarity: 'rare',
     pettyFlavor: 'Squeak softly when executing a tactical retreat.',
+  },
+  {
+    id: 'crown_of_eternity',
+    name: 'Signet of the Eternal Arcanist',
+    slot: 'ring',
+    description: 'Taken from Vorath. +45 Max HP, +40 Max Mana, +16 Spell Power, +15% Posture DMG, +1 Slot.',
+    bonusHp: 45,
+    bonusMana: 40,
+    bonusSpellPower: 16,
+    bonusCritRate: 0.12,
+    postureDamageMultiplier: 1.15,
+    chargeCostReduction: 4,
+    extraSpellSlots: 1,
+    minLevel: 5,
+    rarity: 'legendary',
+    pettyFlavor: 'Still radiates ancient disdain for unreviewed dissertations.',
   },
 ];

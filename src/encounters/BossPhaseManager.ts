@@ -8,6 +8,7 @@ export interface BossStageConfig {
   unlockedSpells: string[];
   transitionDialogue: string;
   auraColor: number;
+  summonTemplateId?: string;
 }
 
 export const BOSS_STAGES: Record<string, BossStageConfig[]> = {
@@ -96,6 +97,37 @@ export const BOSS_STAGES: Record<string, BossStageConfig[]> = {
       unlockedSpells: ['shadow_ambush', 'flank_volley', 'leech_vitality', 'cataclysm_blast'],
       transitionDialogue: 'DARKNESS CONSUMES ALL LANES!',
       auraColor: 0xbe123c,
+    },
+  ],
+  vorath: [
+    {
+      stage: 1,
+      hpThresholdRatio: 1.0,
+      title: 'Phase 1: The Eternal Scholar',
+      spellPowerBonus: 0,
+      unlockedSpells: ['eternal_bolt', 'arcane_ward_vorath', 'void_bolt'],
+      transitionDialogue: 'A fledgling apprentice dares step into my sanctum? Show me your elementary tricks.',
+      auraColor: 0x7c3aed,
+    },
+    {
+      stage: 2,
+      hpThresholdRatio: 0.7,
+      title: 'Phase 2: The Forbidden Master',
+      spellPowerBonus: 6,
+      unlockedSpells: ['eternal_bolt', 'abyssal_lance', 'chronal_snare', 'arcane_ward_vorath'],
+      transitionDialogue: 'Impressive persistence, child. Let us see how you fare against the Forbidden Lattice!',
+      auraColor: 0xd4af37,
+      summonTemplateId: 'void_wisp',
+    },
+    {
+      stage: 3,
+      hpThresholdRatio: 0.35,
+      title: 'Phase 3: The End of Ages',
+      spellPowerBonus: 12,
+      unlockedSpells: ['abyssal_lance', 'chronal_snare', 'apocalypse_singularity'],
+      transitionDialogue: 'ENOUGH! I HAVE OUTLIVED EMPIRES—WITNESS THE END OF AGES!',
+      auraColor: 0xef4444,
+      summonTemplateId: 'eternal_construct',
     },
   ],
 };

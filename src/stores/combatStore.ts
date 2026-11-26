@@ -11,12 +11,12 @@ import { PredictionEngine, PredictionResult } from '../ai/PredictionEngine';
 import { PredictabilitySystem, PredictabilityStage } from '../ai/PredictabilitySystem';
 import { EnemyEmotionSystem, EnemyEmotion } from '../ai/EnemyEmotionSystem';
 import { BossPersistenceManager } from '../ai/BossPersistence';
-import { getContextualLine } from '../dialogue/banterData';
+import { getContextualLine, getVorathAdaptiveBanter } from '../dialogue/banterData';
 import { BattleRecorder } from '../history/BattleRecorder';
 import { BattleRecord } from '../history/BattleRecord';
 import { getBattleHistoryRepository } from '../history/BattleHistoryRepository';
 import { EncounterManager, EnemyInstance } from '../encounters/EncounterManager';
-import { EncounterDefinition } from '../encounters/EncounterDefinition';
+import { EncounterDefinition, ENEMY_TEMPLATES } from '../encounters/EncounterDefinition';
 import { BossPhaseManager } from '../encounters/BossPhaseManager';
 import { EnemyCoordination } from '../ai/EnemyCoordination';
 import { resolveSpellTargets } from '../combat/TargetingSystem';
@@ -31,6 +31,11 @@ export interface CombatEquipmentBonuses {
   dodgeEfficiencyBonus?: number;
   postureDamageMultiplier?: number;
   healingBonusMultiplier?: number;
+  synergyBonusMultiplier?: number;
+  damageReduction?: number;
+  manaRegenBonus?: number;
+  manaCostReduction?: number;
+  playerLevel?: number;
 }
 
 interface CombatState {
@@ -251,6 +256,10 @@ export const useCombatStore = create<CombatState>((set, get) => ({
     }
 
     const synced = syncPrimaryEnemyFields(instances, instances[0].entity.id);
+    const vorathBanter =
+      primaryBoss.entity.bossId === 'vorath'
+        ? getVorathAdaptiveBanter(BossPersistenceManager.loadBossMemory('vorath'))
+        : null;
 
     set({
       player: playerEntity,
@@ -275,7 +284,7 @@ export const useCombatStore = create<CombatState>((set, get) => ({
       chargingMode: false,
       recentDamageTaken: 0,
       equipBonuses,
-      contextualRivalBanter: null,
+      contextualRivalBanter: vorathBanter,
       battleRecorder: recorder,
       lastBattleRecord: null,
       ...synced,
@@ -521,7 +530,8 @@ export const useCombatStore = create<CombatState>((set, get) => ({
       return { success: true };
     }
 
-    const manaNeeded = releasingCharged ? 0 : spell.manaCost;
+    const manaCostRed = spell.manaCost > 10 ? (equipBonuses.manaCostReduction ?? 0) : 0;
+    const manaNeeded = releasingCharged ? 0 : Math.max(1, spell.manaCost - manaCostRed);
     if (player.mana < manaNeeded) {
       const msg = `Not enough mana to cast ${spell.name}.`;
       get().addLog(`⚠️ ${msg}`, 'system');
@@ -758,7 +768,12 @@ export const useCombatStore = create<CombatState>((set, get) => ({
 
           spell.effects.forEach((eff) => {
             if (eff.type === 'damage') {
-              const scaledBase = Math.round(eff.value * totalSpellMult * synergy.bonusMultiplier);
+              const attrSynergyBoost = synergy.triggered
+                ? (equipBonuses.synergyBonusMultiplier ?? 1.0)
+                : 1.0;
+              const scaledBase = Math.round(
+                eff.value * totalSpellMult * synergy.bonusMultiplier * attrSynergyBoost
+              );
               const calc = calculateSpellDamage(
                 currentPlayer,
                 inst.entity,
@@ -822,6 +837,39 @@ export const useCombatStore = create<CombatState>((set, get) => ({
                   `🔥 ${inst.entity.name} entered ${stageRes.config.title}!`,
                   'critical'
                 );
+
+                // Summon construct/ally if configured for this boss phase (up to 3 living enemies)
+                const livingCount = currentEnemies.filter((e) => e.entity.hp > 0).length;
+                if (stageRes.config.summonTemplateId && livingCount < 3) {
+                  const tpl = ENEMY_TEMPLATES[stageRes.config.summonTemplateId];
+                  if (tpl) {
+                    const usedLanes = new Set(
+                      currentEnemies.filter((e) => e.entity.hp > 0).map((e) => e.entity.lane ?? 'center')
+                    );
+                    const openLane: Lane =
+                      (['left', 'right', 'center'] as Lane[]).find((l) => !usedLanes.has(l)) ?? 'right';
+                    const summonedInst = EncounterManager.createEnemyInstances({
+                      id: 'summon',
+                      name: 'Summon',
+                      subtitle: '',
+                      difficulty: 'duel',
+                      description: '',
+                      enemies: [{ ...tpl, lane: openLane }],
+                      rewards: { xp: 0, gold: 0 },
+                    })[0];
+                    summonedInst.entity.id = `${tpl.id}_summon_${Date.now()}`;
+                    summonedInst.currentIntent = EnemyCoordination.decideCoordinatedIntent(
+                      summonedInst.entity,
+                      currentEnemies.map((e) => e.entity),
+                      currentPlayer
+                    );
+                    currentEnemies.push(summonedInst);
+                    get().addLog(
+                      `✨ ${inst.entity.name} summoned ${summonedInst.entity.name} in ${openLane.toUpperCase()} lane!`,
+                      'enemy'
+                    );
+                  }
+                }
               }
 
               if (newHp <= 0) {
@@ -968,7 +1016,6 @@ export const useCombatStore = create<CombatState>((set, get) => ({
       set({ turnPhase: 'enemy_casting' });
 
       const currentEnemies = [...get().enemies];
-      let currentPlayer = get().player;
       const {
         activeDodge,
         consecutiveDodges,
@@ -978,17 +1025,85 @@ export const useCombatStore = create<CombatState>((set, get) => ({
         turnNumber,
       } = get();
 
+      // Build a list of living enemy actions to execute sequentially
+      const livingEnemyIndices: number[] = [];
+      for (let i = 0; i < currentEnemies.length; i++) {
+        if (currentEnemies[i].entity.hp > 0) {
+          livingEnemyIndices.push(i);
+        }
+      }
+
       let dodgeResolvedThisTurn = false;
       let totalDamageToPlayerThisTurn = 0;
 
-      for (let i = 0; i < currentEnemies.length; i++) {
-        const inst = currentEnemies[i];
-        if (inst.entity.hp <= 0) continue;
+      // Process each enemy sequentially with delays so projectiles visually travel
+      const ENEMY_ACTION_DELAY = 650; // ms between each enemy's action
 
+      function processEnemyAtStep(step: number): void {
+        if (get().turnPhase === 'victory' || get().turnPhase === 'defeat') return;
+
+        // All enemies have acted — finalize the turn
+        if (step >= livingEnemyIndices.length) {
+          const synced = syncPrimaryEnemyFields(currentEnemies, get().selectedTargetId);
+          const latestPlayer = get().player;
+          set({
+            enemies: currentEnemies,
+            activeDodge: null,
+            recentDamageTaken: totalDamageToPlayerThisTurn,
+            ...synced,
+          });
+
+          if (latestPlayer.hp <= 0) {
+            currentEnemies.forEach((inst) => {
+              inst.emotionSystem.evaluateEvent({ type: 'player_defeated' }, inst.entity, latestPlayer, inst.memory);
+              if (inst.entity.isBoss && inst.entity.bossId) {
+                const topEl = inst.memory.getMostFrequentElement().element;
+                BossPersistenceManager.recordEncounterOutcome(inst.entity.bossId, false, topEl);
+              }
+            });
+
+            if (battleRecorder && !battleRecorder.isFinalized()) {
+              const defeatedCount = currentEnemies.filter((e) => e.entity.hp <= 0).length;
+              const record = battleRecorder.finalize('defeat', turnNumber, {
+                xpEarned: 0,
+                goldEarned: 0,
+                itemsEarned: [],
+                levelBefore: 0,
+                levelAfter: 0,
+                unlocksEarned: [],
+              });
+              if (record) {
+                if (record.advancedCombat) record.advancedCombat.enemiesDefeated = defeatedCount;
+                set({ lastBattleRecord: record });
+                getBattleHistoryRepository().saveRecord(record).catch(() => {});
+              }
+            }
+
+            setTimeout(() => {
+              set({ turnPhase: 'defeat', currentEnemyEmotion: 'triumphant' });
+              gameEvents.emit('ENTITY_ANIMATION', { entityId: 'player', state: 'defeat' });
+              gameEvents.emit('ENTITY_ANIMATION', { entityId: 'enemy', state: 'victory' });
+              get().addLog('☠️ DEFEAT! The Petty Sorcerer was overwhelmed.', 'critical');
+            }, 400);
+            return;
+          }
+
+          setTimeout(() => {
+            get().concludeTurn();
+          }, 500);
+          return;
+        }
+
+        const i = livingEnemyIndices[step];
+        const inst = currentEnemies[i];
+        let currentPlayer = get().player;
+
+        // Staggered enemies lose their action
         if (inst.entity.isStaggered) {
           inst.entity = PostureSystem.clearStagger(inst.entity);
           get().addLog(`💫 ${inst.entity.name} is staggered and loses their action!`, 'system');
-          continue;
+          processEnemyAtStep(step + 1);
+          return;
         }
 
         const intent = inst.currentIntent;
@@ -1003,6 +1118,7 @@ export const useCombatStore = create<CombatState>((set, get) => ({
 
         const enemyLaneCoords = LANE_COORDS[inst.entity.lane ?? 'center'];
 
+        // Handle defense / support actions (no projectile to player)
         if (action.type === 'defense' || action.type === 'support') {
           if (action.spellId === 'ally_mend' && intent?.targetEnemyId) {
             const allyIdx = currentEnemies.findIndex((e) => e.entity.id === intent.targetEnemyId);
@@ -1022,7 +1138,9 @@ export const useCombatStore = create<CombatState>((set, get) => ({
                 color: '#34d399',
               });
               get().addLog(`💚 ${inst.entity.name} mended ${ally.entity.name} for +${healVal} HP!`, 'enemy');
-              continue;
+              set({ enemies: currentEnemies });
+              setTimeout(() => processEnemyAtStep(step + 1), ENEMY_ACTION_DELAY);
+              return;
             }
           }
 
@@ -1046,7 +1164,9 @@ export const useCombatStore = create<CombatState>((set, get) => ({
                 `🛡️ ${inst.entity.name} shielded ${currentEnemies[allyIdx].entity.name} (+${shieldVal})!`,
                 'enemy'
               );
-              continue;
+              set({ enemies: currentEnemies });
+              setTimeout(() => processEnemyAtStep(step + 1), ENEMY_ACTION_DELAY);
+              return;
             }
           }
 
@@ -1059,9 +1179,12 @@ export const useCombatStore = create<CombatState>((set, get) => ({
             color: '#10b981',
           });
           get().addLog(`🛡️ ${inst.entity.name} wove ${action.name} (+${shieldVal} Shield).`, 'enemy');
-          continue;
+          set({ enemies: currentEnemies });
+          setTimeout(() => processEnemyAtStep(step + 1), ENEMY_ACTION_DELAY);
+          return;
         }
 
+        // Offensive action — fire projectile, then apply damage after travel delay
         const playerLane: Lane = currentPlayer.lane ?? 'center';
         const playerLaneCoords = LANE_COORDS[playerLane];
 
@@ -1087,6 +1210,130 @@ export const useCombatStore = create<CombatState>((set, get) => ({
             ? 'spark'
             : 'void_skull';
 
+        // Fire projectile — damage & effects trigger in onHit when projectile reaches player
+        let impactHandled = false;
+        const handleEnemyProjectileHit = () => {
+          if (impactHandled) return;
+          impactHandled = true;
+          if (get().turnPhase === 'victory' || get().turnPhase === 'defeat') return;
+
+          currentPlayer = get().player; // Re-read player state (may have been updated by previous enemy)
+          const calc = calculateSpellDamage(inst.entity, currentPlayer, action.baseDamage);
+
+          const dodgeRes = DodgeSystem.resolveIncomingAttack(
+            activeDodge,
+            currentPlayer.lane ?? 'center',
+            intent?.telegraph,
+            calc.finalDamage + calc.absorbedByShield,
+            consecutiveDodges,
+            equipBonuses.dodgeEfficiencyBonus ?? 0
+          );
+
+          if (activeDodge && !dodgeResolvedThisTurn) {
+            dodgeResolvedThisTurn = true;
+            if (battleRecorder) {
+              battleRecorder.recordDodgeResult(
+                dodgeRes.evaded,
+                dodgeRes.isPerfectDodge,
+                dodgeRes.damageAvoided,
+                dodgeRes.reason
+              );
+            }
+            if (dodgeRes.manaRecovered > 0) {
+              currentPlayer = {
+                ...currentPlayer,
+                mana: Math.min(currentPlayer.maxMana, currentPlayer.mana + dodgeRes.manaRecovered),
+              };
+            }
+            if (dodgeRes.grantsNextTurnBonus) {
+              set({ perfectDodgeBuff: true });
+            }
+          }
+
+          const pLaneCoords = LANE_COORDS[currentPlayer.lane ?? 'center'];
+
+          if (dodgeRes.evaded) {
+            gameEvents.emit('SPAWN_COMBAT_TEXT', {
+              id: `dodge-${Date.now()}-${i}`,
+              x: pLaneCoords.playerX,
+              y: pLaneCoords.playerY - 95,
+              text: dodgeRes.isPerfectDodge ? 'PERFECT DODGE!' : 'EVADED!',
+              color: dodgeRes.isPerfectDodge ? '#facc15' : '#38bdf8',
+              size: 16,
+            });
+            get().addLog(`💨 ${dodgeRes.reason}`, 'player');
+            set({ player: currentPlayer });
+            setTimeout(() => processEnemyAtStep(step + 1), 300);
+            return;
+          }
+
+          const shieldBefore = currentPlayer.shield;
+          const vitReduction = 1 - Math.min(0.25, equipBonuses.damageReduction ?? 0);
+          const postDodgeRaw = Math.round(
+            action.baseDamage * dodgeRes.damageMultiplier * vitReduction
+          );
+          const finalCalc = calculateSpellDamage(inst.entity, currentPlayer, postDodgeRaw);
+          const dmg = finalCalc.finalDamage;
+          totalDamageToPlayerThisTurn += dmg;
+
+          currentPlayer = {
+            ...currentPlayer,
+            hp: Math.max(0, currentPlayer.hp - dmg),
+            shield: finalCalc.remainingShield,
+          };
+
+          if (ChargingSystem.shouldInterruptCharge(chargedSpell, shieldBefore, dmg)) {
+            if (battleRecorder && chargedSpell) {
+              battleRecorder.recordSpellInterrupted(chargedSpell.spellName);
+            }
+            get().addLog(
+              `💥 ${inst.entity.name} INTERRUPTED your charged ${chargedSpell?.spellName}!`,
+              'critical'
+            );
+            set({ chargedSpell: null });
+          }
+
+          if (action.type === 'drain' && dmg > 0) {
+            const healAmt = Math.round(dmg * 0.5);
+            inst.entity = {
+              ...inst.entity,
+              hp: Math.min(inst.entity.maxHp, inst.entity.hp + healAmt),
+            };
+          }
+
+          soundEngine.playHit(finalCalc.isCritical);
+          gameEvents.emit('SCREEN_SHAKE', { intensity: finalCalc.isCritical ? 14 : 8, durationMs: 260 });
+          gameEvents.emit('ENTITY_ANIMATION', { entityId: 'player', state: 'hurt' });
+          gameEvents.emit('SPAWN_COMBAT_TEXT', {
+            id: `txt-${Date.now()}-${i}`,
+            x: pLaneCoords.playerX,
+            y: pLaneCoords.playerY - 90,
+            text: finalCalc.absorbedByShield > 0 && dmg === 0 ? 'BLOCKED!' : `-${dmg}`,
+            color: '#ef4444',
+          });
+
+          get().addLog(
+            `💥 ${inst.entity.name}'s ${action.name} dealt ${dmg} damage!`,
+            'enemy'
+          );
+
+          if (battleRecorder) {
+            const blocked = finalCalc.absorbedByShield > 0 && dmg === 0;
+            battleRecorder.recordDamageReceived(dmg, finalCalc.isCritical, blocked);
+          }
+
+          set({ player: currentPlayer, enemies: currentEnemies });
+
+          if (currentPlayer.hp <= 0) {
+            // Player died — skip remaining enemies, finalize
+            processEnemyAtStep(livingEnemyIndices.length);
+            return;
+          }
+
+          // Brief pause after impact before next enemy casts
+          setTimeout(() => processEnemyAtStep(step + 1), 300);
+        };
+
         gameEvents.emit('PROJECTILE_FIRED', {
           id: `eproj-${Date.now()}-${i}`,
           type: enemyProjType,
@@ -1096,154 +1343,24 @@ export const useCombatStore = create<CombatState>((set, get) => ({
           targetY: playerLaneCoords.playerY - 28,
           speed: 11,
           color: enemyProjColor,
-        });
-        const calc = calculateSpellDamage(inst.entity, currentPlayer, action.baseDamage);
-
-        const dodgeRes = DodgeSystem.resolveIncomingAttack(
-          activeDodge,
-          playerLane,
-          intent?.telegraph,
-          calc.finalDamage + calc.absorbedByShield,
-          consecutiveDodges,
-          equipBonuses.dodgeEfficiencyBonus ?? 0
-        );
-
-        if (activeDodge && !dodgeResolvedThisTurn) {
-          dodgeResolvedThisTurn = true;
-          if (battleRecorder) {
-            battleRecorder.recordDodgeResult(
-              dodgeRes.evaded,
-              dodgeRes.isPerfectDodge,
-              dodgeRes.damageAvoided,
-              dodgeRes.reason
-            );
-          }
-          if (dodgeRes.manaRecovered > 0) {
-            currentPlayer = {
-              ...currentPlayer,
-              mana: Math.min(currentPlayer.maxMana, currentPlayer.mana + dodgeRes.manaRecovered),
-            };
-          }
-          if (dodgeRes.grantsNextTurnBonus) {
-            set({ perfectDodgeBuff: true });
-          }
-        }
-
-        if (dodgeRes.evaded) {
-          gameEvents.emit('SPAWN_COMBAT_TEXT', {
-            id: `dodge-${Date.now()}-${i}`,
-            x: playerLaneCoords.playerX,
-            y: playerLaneCoords.playerY - 95,
-            text: dodgeRes.isPerfectDodge ? 'PERFECT DODGE!' : 'EVADED!',
-            color: dodgeRes.isPerfectDodge ? '#facc15' : '#38bdf8',
-            size: 16,
-          });
-          get().addLog(`💨 ${dodgeRes.reason}`, 'player');
-          continue;
-        }
-
-        const shieldBefore = currentPlayer.shield;
-        const postDodgeRaw = Math.round(action.baseDamage * dodgeRes.damageMultiplier);
-        const finalCalc = calculateSpellDamage(inst.entity, currentPlayer, postDodgeRaw);
-        const dmg = finalCalc.finalDamage;
-        totalDamageToPlayerThisTurn += dmg;
-
-        currentPlayer = {
-          ...currentPlayer,
-          hp: Math.max(0, currentPlayer.hp - dmg),
-          shield: finalCalc.remainingShield,
-        };
-
-        if (ChargingSystem.shouldInterruptCharge(chargedSpell, shieldBefore, dmg)) {
-          if (battleRecorder && chargedSpell) {
-            battleRecorder.recordSpellInterrupted(chargedSpell.spellName);
-          }
-          get().addLog(
-            `💥 ${inst.entity.name} INTERRUPTED your charged ${chargedSpell?.spellName}!`,
-            'critical'
-          );
-          set({ chargedSpell: null });
-        }
-
-        if (action.type === 'drain' && dmg > 0) {
-          const healAmt = Math.round(dmg * 0.5);
-          inst.entity = {
-            ...inst.entity,
-            hp: Math.min(inst.entity.maxHp, inst.entity.hp + healAmt),
-          };
-        }
-
-        soundEngine.playHit(finalCalc.isCritical);
-        gameEvents.emit('SCREEN_SHAKE', { intensity: finalCalc.isCritical ? 14 : 8, durationMs: 260 });
-        gameEvents.emit('ENTITY_ANIMATION', { entityId: 'player', state: 'hurt' });
-        gameEvents.emit('SPAWN_COMBAT_TEXT', {
-          id: `txt-${Date.now()}-${i}`,
-          x: playerLaneCoords.playerX,
-          y: playerLaneCoords.playerY - 90,
-          text: finalCalc.absorbedByShield > 0 && dmg === 0 ? 'BLOCKED!' : `-${dmg}`,
-          color: '#ef4444',
+          onHit: handleEnemyProjectileHit,
         });
 
-        get().addLog(
-          `💥 ${inst.entity.name}'s ${action.name} dealt ${dmg} damage!`,
-          'enemy'
-        );
-
-        if (battleRecorder) {
-          const blocked = finalCalc.absorbedByShield > 0 && dmg === 0;
-          battleRecorder.recordDamageReceived(dmg, finalCalc.isCritical, blocked);
-        }
-
-        if (currentPlayer.hp <= 0) break;
-      }
-
-      const synced = syncPrimaryEnemyFields(currentEnemies, get().selectedTargetId);
-      set({
-        player: currentPlayer,
-        enemies: currentEnemies,
-        activeDodge: null,
-        recentDamageTaken: totalDamageToPlayerThisTurn,
-        ...synced,
-      });
-
-      if (currentPlayer.hp <= 0) {
-        currentEnemies.forEach((inst) => {
-          inst.emotionSystem.evaluateEvent({ type: 'player_defeated' }, inst.entity, currentPlayer, inst.memory);
-          if (inst.entity.isBoss && inst.entity.bossId) {
-            const topEl = inst.memory.getMostFrequentElement().element;
-            BossPersistenceManager.recordEncounterOutcome(inst.entity.bossId, false, topEl);
-          }
-        });
-
-        if (battleRecorder && !battleRecorder.isFinalized()) {
-          const defeatedCount = currentEnemies.filter((e) => e.entity.hp <= 0).length;
-          const record = battleRecorder.finalize('defeat', turnNumber, {
-            xpEarned: 0,
-            goldEarned: 0,
-            itemsEarned: [],
-            levelBefore: 0,
-            levelAfter: 0,
-            unlocksEarned: [],
-          });
-          if (record) {
-            if (record.advancedCombat) record.advancedCombat.enemiesDefeated = defeatedCount;
-            set({ lastBattleRecord: record });
-            getBattleHistoryRepository().saveRecord(record).catch(() => {});
-          }
-        }
-
+        // Safety fallback in case ProjectileManager is unmounted (e.g., headless tests or background tab)
         setTimeout(() => {
-          set({ turnPhase: 'defeat', currentEnemyEmotion: 'triumphant' });
-          gameEvents.emit('ENTITY_ANIMATION', { entityId: 'player', state: 'defeat' });
-          gameEvents.emit('ENTITY_ANIMATION', { entityId: 'enemy', state: 'victory' });
-          get().addLog('☠️ DEFEAT! The Petty Sorcerer was overwhelmed.', 'critical');
-        }, 400);
-        return;
+          handleEnemyProjectileHit();
+        }, 1600);
       }
 
-      setTimeout(() => {
-        get().concludeTurn();
-      }, 500);
+      // Start processing from the first living enemy
+      if (livingEnemyIndices.length > 0) {
+        processEnemyAtStep(0);
+      } else {
+        // No living enemies — just conclude
+        setTimeout(() => {
+          get().concludeTurn();
+        }, 500);
+      }
     }, 450);
   },
 
@@ -1256,9 +1373,13 @@ export const useCombatStore = create<CombatState>((set, get) => ({
       currentCooldown: Math.max(0, s.currentCooldown - 1),
     }));
 
+    const { equipBonuses } = get();
     const regenPlayer: CombatEntity = {
       ...playerProcessed.updatedEntity,
-      mana: Math.min(player.maxMana, playerProcessed.updatedEntity.mana + 10),
+      mana: Math.min(
+        player.maxMana,
+        playerProcessed.updatedEntity.mana + 10 + (equipBonuses.manaRegenBonus ?? 0)
+      ),
       stamina: Math.min(player.maxStamina ?? 100, (playerProcessed.updatedEntity.stamina ?? 100) + 20),
     };
 
