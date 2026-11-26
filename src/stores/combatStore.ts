@@ -1414,7 +1414,7 @@ export const useCombatStore = create<CombatState>((set, get) => ({
           }
 
           if (action.type === 'drain' && dmg > 0) {
-            const healAmt = Math.round(dmg * 0.5);
+            const healAmt = Math.round(dmg * 0.25);
             inst.entity = {
               ...inst.entity,
               hp: Math.min(inst.entity.maxHp, inst.entity.hp + healAmt),
