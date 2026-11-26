@@ -517,7 +517,17 @@ export const useCombatStore = create<CombatState>((set, get) => ({
       }
 
       soundEngine.playSpellCast(spell.castAnimation);
+      const chargeCoords = LANE_COORDS[player.lane ?? 'center'];
       gameEvents.emit('ENTITY_ANIMATION', { entityId: 'player', state: 'cast' });
+      gameEvents.emit('SPELL_CAST_EFFECT', {
+        spellId: spell.id,
+        source: 'player',
+        target: 'player',
+        element: isOffensiveElement(spell.element) ? spell.element : 'arcane',
+        isCharged: true,
+        startX: chargeCoords.playerX,
+        startY: chargeCoords.playerY,
+      });
       get().addLog(
         `🔮 Charging ${spell.name}! (${chargeCheck.totalCost} MP — Keep your shield up until next turn!)`,
         'player'
@@ -589,17 +599,36 @@ export const useCombatStore = create<CombatState>((set, get) => ({
         }
       });
 
+      const pCoords = LANE_COORDS[playerLane];
+      const isHealSpell = spell.effects.some((e) => e.type === 'heal' || e.type === 'reversal_heal');
+      gameEvents.emit('SPELL_CAST_EFFECT', {
+        spellId: spell.id,
+        source: 'player',
+        target: 'player',
+        element: isHealSpell ? 'heal' : 'defense',
+        startX: pCoords.playerX,
+        startY: pCoords.playerY,
+        targetX: pCoords.playerX,
+        targetY: pCoords.playerY,
+      });
+      if (isHealSpell) {
+        soundEngine.playHealChime();
+      } else {
+        soundEngine.playShieldResonance();
+      }
+
       setTimeout(() => {
         const healMult = equipBonuses.healingBonusMultiplier ?? 1.0;
         let currentP = get().player;
+        const pNowCoords = LANE_COORDS[currentP.lane ?? 'center'];
 
         spell.effects.forEach((eff) => {
           if (eff.type === 'shield') {
             currentP = { ...currentP, shield: currentP.shield + eff.value };
             gameEvents.emit('SPAWN_COMBAT_TEXT', {
               id: `txt-${Date.now()}`,
-              x: 270,
-              y: 280,
+              x: pNowCoords.playerX,
+              y: pNowCoords.playerY - 90,
               text: `SHIELD +${eff.value}`,
               color: '#60a5fa',
             });
@@ -617,8 +646,8 @@ export const useCombatStore = create<CombatState>((set, get) => ({
             }
             gameEvents.emit('SPAWN_COMBAT_TEXT', {
               id: `heal-${Date.now()}`,
-              x: 270,
-              y: 275,
+              x: pNowCoords.playerX,
+              y: pNowCoords.playerY - 95,
               text: `+${res.actualHealed} HP`,
               color: '#34d399',
             });
@@ -652,6 +681,7 @@ export const useCombatStore = create<CombatState>((set, get) => ({
     const primaryTarget = targetRes.targets[0];
     const pStartCoords = LANE_COORDS[playerLane];
     const eTargetCoords = LANE_COORDS[primaryTarget?.lane ?? 'center'];
+    const projSpeed = offensiveEl === 'lightning' ? 18 : spell.id === 'pyro_tantrum' ? 10 : 12;
 
     gameEvents.emit('PROJECTILE_FIRED', {
       id: `proj-${Date.now()}`,
@@ -660,8 +690,11 @@ export const useCombatStore = create<CombatState>((set, get) => ({
       startY: pStartCoords.playerY - 30,
       targetX: eTargetCoords.enemyX - 20,
       targetY: eTargetCoords.enemyY - 30,
-      speed: 12,
+      speed: projSpeed,
       color: projectileColors[offensiveEl] || 0xa855f7,
+      spellId: spell.id,
+      element: offensiveEl,
+      isCharged: releasingCharged,
       onHit: () => {
         const currentEnemies = [...get().enemies];
         let totalActualDamageForLifesteal = 0;
@@ -809,8 +842,11 @@ export const useCombatStore = create<CombatState>((set, get) => ({
               }
 
               const hitCoords = LANE_COORDS[inst.entity.lane ?? 'center'];
-              soundEngine.playHit(calc.isCritical);
-              gameEvents.emit('SCREEN_SHAKE', { intensity: calc.isCritical ? 12 : 7, durationMs: 250 });
+              soundEngine.playElementalImpact(offensiveEl, calc.isCritical);
+              gameEvents.emit('SCREEN_SHAKE', {
+                intensity: calc.isCritical || releasingCharged || spell.id === 'pyro_tantrum' ? 13 : 7,
+                durationMs: 250,
+              });
               gameEvents.emit('ENTITY_ANIMATION', { entityId: inst.entity.id, state: 'hurt' });
               gameEvents.emit('SPAWN_COMBAT_TEXT', {
                 id: `txt-${Date.now()}-${inst.entity.id}`,
@@ -829,6 +865,22 @@ export const useCombatStore = create<CombatState>((set, get) => ({
               const stageRes = BossPhaseManager.evaluateStageTransition(inst.entity);
               if (stageRes.transitioned && stageRes.config) {
                 inst.entity = stageRes.updatedEntity;
+                if (stageRes.config.shiftsLane) {
+                  const nextBossLane: Lane =
+                    (['left', 'center', 'right'] as Lane[]).find((l) => l !== inst.entity.lane) ??
+                    'right';
+                  inst.entity = { ...inst.entity, lane: nextBossLane };
+                  get().addLog(
+                    `🌑 ${inst.entity.name} phase-shifted into the ${nextBossLane.toUpperCase()} lane!`,
+                    'enemy'
+                  );
+                }
+                if (stageRes.config.phaseShieldBonus) {
+                  get().addLog(
+                    `🛡️ ${inst.entity.name} erupted with a +${stageRes.config.phaseShieldBonus} Phase Barrier!`,
+                    'enemy'
+                  );
+                }
                 if (battleRecorder) {
                   battleRecorder.recordBossStageTransition(inst.entity.name, stageRes.newStage);
                 }
@@ -935,10 +987,20 @@ export const useCombatStore = create<CombatState>((set, get) => ({
             battleRecorder.recordHealing(stealRes.actualHealed, true);
           }
           if (stealRes.actualHealed > 0) {
+            const pNowCoords = LANE_COORDS[currentPlayer.lane ?? 'center'];
+            const srcCoords = LANE_COORDS[primaryTarget?.lane ?? 'center'];
+            gameEvents.emit('LIFESTEAL_STREAM', {
+              startX: srcCoords.enemyX - 15,
+              startY: srcCoords.enemyY - 30,
+              targetX: pNowCoords.playerX + 15,
+              targetY: pNowCoords.playerY - 30,
+              amount: stealRes.actualHealed,
+            });
+            soundEngine.playHealChime();
             gameEvents.emit('SPAWN_COMBAT_TEXT', {
               id: `lifesteal-${Date.now()}`,
-              x: 270,
-              y: 270,
+              x: pNowCoords.playerX,
+              y: pNowCoords.playerY - 95,
               text: `+${stealRes.actualHealed} LIFESTEAL`,
               color: '#34d399',
             });
@@ -996,11 +1058,39 @@ export const useCombatStore = create<CombatState>((set, get) => ({
       },
     });
 
+    // Fire visual-only projectiles to any secondary targets in multi-target spells
+    targetRes.targets.slice(1).forEach((secTarget, idx) => {
+      const secCoords = LANE_COORDS[secTarget.lane ?? 'center'];
+      gameEvents.emit('PROJECTILE_FIRED', {
+        id: `proj-sec-${Date.now()}-${idx}`,
+        type: spell.projectileType || 'arcane_bolt',
+        startX: pStartCoords.playerX + 30,
+        startY: pStartCoords.playerY - 30,
+        targetX: secCoords.enemyX - 20,
+        targetY: secCoords.enemyY - 30,
+        speed: projSpeed,
+        color: projectileColors[offensiveEl] || 0xa855f7,
+        spellId: spell.id,
+        element: offensiveEl,
+        isCharged: releasingCharged,
+      });
+    });
+
     if (primaryTarget) {
+      const affectedLanes = Array.from(
+        new Set(targetRes.targets.map((t) => t.lane ?? 'center'))
+      ) as Lane[];
       gameEvents.emit('SPELL_CAST_EFFECT', {
         spellId: spell.id,
         source: 'player',
         target: 'enemy',
+        element: offensiveEl,
+        isCharged: releasingCharged,
+        startX: pStartCoords.playerX,
+        startY: pStartCoords.playerY,
+        targetX: eTargetCoords.enemyX,
+        targetY: eTargetCoords.enemyY,
+        affectedLanes: targetRes.targets.length > 1 || spell.targetRule !== 'single' ? affectedLanes : undefined,
       });
     }
 
@@ -1171,14 +1261,32 @@ export const useCombatStore = create<CombatState>((set, get) => ({
           }
 
           inst.entity = { ...inst.entity, shield: inst.entity.shield + shieldVal };
+          if (action.selfBuff) {
+            inst.entity = {
+              ...inst.entity,
+              statusEffects: [
+                ...inst.entity.statusEffects,
+                {
+                  id: `ebuff-${Date.now()}-${i}`,
+                  type: action.selfBuff.type,
+                  name: action.selfBuff.name,
+                  turnsRemaining: action.selfBuff.turns,
+                  value: action.selfBuff.value,
+                },
+              ],
+            };
+          }
           gameEvents.emit('SPAWN_COMBAT_TEXT', {
             id: `eshield-${Date.now()}-${i}`,
             x: enemyLaneCoords.enemyX,
             y: enemyLaneCoords.enemyY - 95,
-            text: `SHIELD +${shieldVal}`,
+            text: action.selfBuff ? `SHIELD +${shieldVal} • EMPOWERED` : `SHIELD +${shieldVal}`,
             color: '#10b981',
           });
-          get().addLog(`🛡️ ${inst.entity.name} wove ${action.name} (+${shieldVal} Shield).`, 'enemy');
+          get().addLog(
+            `🛡️ ${inst.entity.name} wove ${action.name} (+${shieldVal} Shield${action.selfBuff ? `, +${action.selfBuff.name}` : ''}).`,
+            'enemy'
+          );
           set({ enemies: currentEnemies });
           setTimeout(() => processEnemyAtStep(step + 1), ENEMY_ACTION_DELAY);
           return;
@@ -1209,6 +1317,17 @@ export const useCombatStore = create<CombatState>((set, get) => ({
             : action.castAnimation === 'spark'
             ? 'spark'
             : 'void_skull';
+
+        const enemyVfxElement =
+          action.spellId === 'frost_lance' || action.spellId === 'chronal_snare'
+            ? 'ice'
+            : action.castAnimation === 'fire'
+            ? 'fire'
+            : action.castAnimation === 'hex'
+            ? 'poison'
+            : action.castAnimation === 'spark'
+            ? 'lightning'
+            : 'arcane';
 
         // Fire projectile — damage & effects trigger in onHit when projectile reaches player
         let impactHandled = false;
@@ -1301,7 +1420,56 @@ export const useCombatStore = create<CombatState>((set, get) => ({
             };
           }
 
-          soundEngine.playHit(finalCalc.isCritical);
+          if (action.inflictStatus) {
+            const st = action.inflictStatus;
+            currentPlayer = {
+              ...currentPlayer,
+              statusEffects: [
+                ...currentPlayer.statusEffects,
+                {
+                  id: `pst-${st.type}-${Date.now()}-${i}`,
+                  type: st.type,
+                  name: st.name,
+                  turnsRemaining: st.turns,
+                  value: st.value,
+                },
+              ],
+            };
+            if (battleRecorder) battleRecorder.recordStatusEffect(st.name, 'player');
+            get().addLog(`🔮 Afflicted with ${st.name} (${st.turns} turns)!`, 'enemy');
+          }
+
+          if (action.manaDrain && action.manaDrain > 0) {
+            const drained = Math.min(currentPlayer.mana, action.manaDrain);
+            currentPlayer = { ...currentPlayer, mana: currentPlayer.mana - drained };
+            if (drained > 0) {
+              get().addLog(`💧 ${inst.entity.name} drained ${drained} Mana!`, 'enemy');
+            }
+          }
+
+          if (action.staminaDrain && action.staminaDrain > 0) {
+            const curStam = currentPlayer.stamina ?? 100;
+            const drained = Math.min(curStam, action.staminaDrain);
+            currentPlayer = { ...currentPlayer, stamina: curStam - drained };
+            if (drained > 0) {
+              get().addLog(`❄️ ${inst.entity.name} sapped ${drained} Stamina!`, 'enemy');
+            }
+          }
+
+          if (action.shiftsEnemyLane) {
+            const otherLanes = (['left', 'center', 'right'] as Lane[]).filter(
+              (l) => l !== (inst.entity.lane ?? 'center')
+            );
+            const nextLane = otherLanes[Math.floor(Math.random() * otherLanes.length)] ?? 'center';
+            inst.entity = { ...inst.entity, lane: nextLane };
+            get().addLog(`👤 ${inst.entity.name} slipped into the ${nextLane.toUpperCase()} lane!`, 'enemy');
+          }
+
+          if (finalCalc.absorbedByShield > 0 && dmg === 0) {
+            soundEngine.playShieldResonance();
+          } else {
+            soundEngine.playElementalImpact(enemyVfxElement, finalCalc.isCritical);
+          }
           gameEvents.emit('SCREEN_SHAKE', { intensity: finalCalc.isCritical ? 14 : 8, durationMs: 260 });
           gameEvents.emit('ENTITY_ANIMATION', { entityId: 'player', state: 'hurt' });
           gameEvents.emit('SPAWN_COMBAT_TEXT', {
@@ -1334,6 +1502,20 @@ export const useCombatStore = create<CombatState>((set, get) => ({
           setTimeout(() => processEnemyAtStep(step + 1), 300);
         };
 
+        gameEvents.emit('SPELL_CAST_EFFECT', {
+          spellId: action.spellId,
+          source: 'enemy',
+          target: 'player',
+          element: enemyVfxElement,
+          startX: enemyLaneCoords.enemyX,
+          startY: enemyLaneCoords.enemyY,
+          targetX: playerLaneCoords.playerX,
+          targetY: playerLaneCoords.playerY,
+          affectedLanes: intent?.telegraph?.targetLanes,
+          bossStage: inst.entity.bossStage,
+          bossId: inst.entity.bossId,
+        });
+
         gameEvents.emit('PROJECTILE_FIRED', {
           id: `eproj-${Date.now()}-${i}`,
           type: enemyProjType,
@@ -1341,8 +1523,11 @@ export const useCombatStore = create<CombatState>((set, get) => ({
           startY: enemyLaneCoords.enemyY - 28,
           targetX: playerLaneCoords.playerX + 25,
           targetY: playerLaneCoords.playerY - 28,
-          speed: 11,
+          speed: enemyVfxElement === 'lightning' ? 16 : 11,
           color: enemyProjColor,
+          spellId: action.spellId,
+          element: enemyVfxElement,
+          bossStage: inst.entity.bossStage,
           onHit: handleEnemyProjectileHit,
         });
 

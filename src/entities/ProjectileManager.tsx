@@ -2,27 +2,25 @@ import { useEffect, useRef } from 'react';
 import { Graphics as PixiGraphics } from 'pixi.js';
 import { useTick } from '@pixi/react';
 import { gameEvents } from '../engine/eventBus';
-import { ProjectileEventPayload } from '../engine/types';
-
-interface ActiveProjectile extends ProjectileEventPayload {
-  currentX: number;
-  currentY: number;
-  trail: { x: number; y: number; alpha: number }[];
-}
-
-interface Explosion {
-  id: string;
-  x: number;
-  y: number;
-  color: number;
-  radius: number;
-  maxRadius: number;
-  alpha: number;
-}
+import { useGameStore } from '../stores/gameStore';
+import { VFX_QUALITY_BUDGETS } from '../effects/ElementalEffects';
+import { VfxParticlePool } from '../effects/ParticlePresets';
+import {
+  ActiveElementalProjectile,
+  drawElementalProjectile,
+  emitProjectileTrail,
+  resolveProjectileElement,
+} from '../effects/ProjectileEffects';
+import {
+  ActiveImpactEffect,
+  drawImpactEffect,
+  spawnElementalImpactParticles,
+} from '../effects/ImpactEffects';
 
 export function ProjectileManager() {
-  const projectilesRef = useRef<ActiveProjectile[]>([]);
-  const explosionsRef = useRef<Explosion[]>([]);
+  const projectilesRef = useRef<ActiveElementalProjectile[]>([]);
+  const impactsRef = useRef<ActiveImpactEffect[]>([]);
+  const particlePoolRef = useRef(new VfxParticlePool());
   const graphicsRef = useRef<PixiGraphics | null>(null);
 
   // Subscribe to fired projectiles
@@ -32,31 +30,36 @@ export function ProjectileManager() {
         ...payload,
         currentX: payload.startX,
         currentY: payload.startY,
+        age: 0,
+        vfxElement: resolveProjectileElement(payload),
         trail: [],
       });
     });
-    return () => unsub();
+    return () => {
+      unsub();
+      particlePoolRef.current.clear();
+    };
   }, []);
 
-  // Update projectile flights & explosion animations
+  // Update projectile flights & elemental impact animations
   useTick((ticker) => {
     const dt = ticker.deltaTime;
+    const budget = VFX_QUALITY_BUDGETS[useGameStore.getState().settings.vfxQuality];
 
-    // Update explosions
-    explosionsRef.current = explosionsRef.current
-      .map((exp) => ({
-        ...exp,
-        radius: exp.radius + dt * 2.5,
-        alpha: exp.alpha - dt * 0.04,
-      }))
-      .filter((exp) => exp.alpha > 0);
+    particlePoolRef.current.update(dt);
+
+    // Update impact bursts
+    impactsRef.current = impactsRef.current
+      .map((imp) => ({ ...imp, age: imp.age + dt }))
+      .filter((imp) => imp.age < imp.maxAge);
 
     // Update projectiles and fire onHit callbacks cleanly outside React setState
     if (projectilesRef.current.length > 0) {
-      const updated: ActiveProjectile[] = [];
+      const updated: ActiveElementalProjectile[] = [];
       const hitsToFire: (() => void)[] = [];
 
       projectilesRef.current.forEach((p) => {
+        p.age += dt;
         const dx = p.targetX - p.currentX;
         const dy = p.targetY - p.currentY;
         const dist = Math.hypot(dx, dy);
@@ -67,26 +70,47 @@ export function ProjectileManager() {
             hitsToFire.push(p.onHit);
           }
 
-          // Spawn impact explosion ring
-          explosionsRef.current.push({
-            id: `exp-${Date.now()}-${Math.random()}`,
+          const isBig =
+            p.isCharged ||
+            p.spellId === 'pyro_tantrum' ||
+            p.spellId === 'apocalypse_singularity' ||
+            p.spellId === 'eternal_annihilation';
+
+          impactsRef.current.push({
+            id: `imp-${Date.now()}-${Math.random()}`,
             x: p.targetX,
             y: p.targetY,
-            color: p.color,
-            radius: 4,
-            maxRadius: 28,
-            alpha: 1,
+            element: p.vfxElement,
+            spellId: p.spellId,
+            isCharged: p.isCharged,
+            bossStage: p.bossStage,
+            age: 0,
+            maxAge: isBig ? 26 : 18,
+            maxRadius: isBig ? 46 : 30,
           });
+
+          spawnElementalImpactParticles(
+            particlePoolRef.current,
+            p.targetX,
+            p.targetY,
+            p.vfxElement,
+            budget.particleScale,
+            budget.maxParticles,
+            { spellId: p.spellId, isCharged: p.isCharged }
+          );
         } else {
           // Move towards target
           const angle = Math.atan2(dy, dx);
           const nextX = p.currentX + Math.cos(angle) * p.speed * dt;
           const nextY = p.currentY + Math.sin(angle) * p.speed * dt;
 
-          // Add to trail
+          // Emit element-specific flight trail particles
+          emitProjectileTrail(particlePoolRef.current, p, budget.particleScale, budget.maxParticles);
+
+          // Add to crisp trail
           const newTrail = [
-            { x: p.currentX, y: p.currentY, alpha: 0.8 },
-            ...p.trail.map((t) => ({ ...t, alpha: t.alpha - 0.15 })),
+            { x: p.currentX, y: p.currentY, alpha: 0.85 },
+            ...p.trail.map((t) => ({ ...t, alpha: t.alpha - 0.16 })),
           ].filter((t) => t.alpha > 0);
 
           updated.push({
@@ -102,32 +126,19 @@ export function ProjectileManager() {
       hitsToFire.forEach((cb) => cb());
     }
 
-    // Draw active projectiles and explosions
+    // Draw active projectiles, particles, and impacts
     if (graphicsRef.current) {
       const g = graphicsRef.current;
       g.clear();
 
-      // Render explosions
-      explosionsRef.current.forEach((exp) => {
-        g.circle(exp.x, exp.y, exp.radius);
-        g.stroke({ width: 3, color: exp.color, alpha: exp.alpha });
-        g.circle(exp.x, exp.y, exp.radius * 0.5);
-        g.fill({ color: 0xffffff, alpha: exp.alpha * 0.8 });
+      impactsRef.current.forEach((imp) => {
+        drawImpactEffect(g, imp, budget.enableSecondaryRings);
       });
 
-      // Render projectiles
-      projectilesRef.current.forEach((p) => {
-        // Draw trail
-        p.trail.forEach((t) => {
-          g.circle(t.x, t.y, 4);
-          g.fill({ color: p.color, alpha: t.alpha * 0.4 });
-        });
+      particlePoolRef.current.draw(g);
 
-        // Draw projectile core
-        g.circle(p.currentX, p.currentY, 7);
-        g.fill({ color: p.color });
-        g.circle(p.currentX, p.currentY, 3.5);
-        g.fill({ color: 0xffffff });
+      projectilesRef.current.forEach((p) => {
+        drawElementalProjectile(g, p);
       });
     }
   });

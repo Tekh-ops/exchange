@@ -17,6 +17,21 @@ export interface EnemyAction {
   castAnimation: 'spark' | 'missile' | 'fire' | 'hex' | 'shield' | 'drain';
   projectileType: 'arcane_bolt' | 'fire_orb' | 'void_skull' | 'spark' | 'hex_beam';
   flavorMessage: string;
+  inflictStatus?: {
+    type: 'weaken' | 'burn' | 'frost' | 'poison';
+    name: string;
+    turns: number;
+    value: number;
+  };
+  manaDrain?: number;
+  staminaDrain?: number;
+  selfBuff?: {
+    type: 'strengthen';
+    name: string;
+    turns: number;
+    value: number;
+  };
+  shiftsEnemyLane?: boolean;
 }
 
 export const ENEMY_SPELLS: Record<string, EnemyAction> = {
@@ -41,7 +56,7 @@ export const ENEMY_SPELLS: Record<string, EnemyAction> = {
     type: 'defense',
     manaCost: 15,
     baseDamage: 0,
-    shieldValue: 30,
+    shieldValue: 35,
     attackPattern: 'support',
     dangerLevel: 'low',
     canDodge: false,
@@ -49,7 +64,8 @@ export const ENEMY_SPELLS: Record<string, EnemyAction> = {
     canInterrupt: true,
     castAnimation: 'shield',
     projectileType: 'hex_beam',
-    flavorMessage: 'weaves a sinister defensive shroud!',
+    flavorMessage: 'weaves a sinister defensive shroud and empowers their arcana!',
+    selfBuff: { type: 'strengthen', name: 'Nether Surge', turns: 2, value: 25 },
   },
   dread_hex: {
     spellId: 'dread_hex',
@@ -64,7 +80,9 @@ export const ENEMY_SPELLS: Record<string, EnemyAction> = {
     canInterrupt: false,
     castAnimation: 'hex',
     projectileType: 'hex_beam',
-    flavorMessage: 'mutters a vicious incantation weakening your magic!',
+    flavorMessage: 'mutters a vicious incantation weakening your magic and draining mana!',
+    inflictStatus: { type: 'weaken', name: 'Arcane Impotence', turns: 2, value: 15 },
+    manaDrain: 12,
   },
   cataclysm_blast: {
     spellId: 'cataclysm_blast',
@@ -80,6 +98,7 @@ export const ENEMY_SPELLS: Record<string, EnemyAction> = {
     castAnimation: 'fire',
     projectileType: 'fire_orb',
     flavorMessage: 'conjures a roaring apocalyptic orb of dark fire!',
+    inflictStatus: { type: 'burn', name: 'Void Scorch', turns: 2, value: 8 },
   },
   leech_vitality: {
     spellId: 'leech_vitality',
@@ -216,7 +235,8 @@ export const ENEMY_SPELLS: Record<string, EnemyAction> = {
     canInterrupt: false,
     castAnimation: 'hex',
     projectileType: 'void_skull',
-    flavorMessage: 'strikes from the umbral flank!',
+    flavorMessage: 'strikes from the umbral flank and slips into another lane!',
+    shiftsEnemyLane: true,
   },
   flank_volley: {
     spellId: 'flank_volley',
@@ -254,7 +274,7 @@ export const ENEMY_SPELLS: Record<string, EnemyAction> = {
     type: 'defense',
     manaCost: 24,
     baseDamage: 0,
-    shieldValue: 85,
+    shieldValue: 110,
     attackPattern: 'support',
     dangerLevel: 'low',
     canDodge: false,
@@ -262,7 +282,8 @@ export const ENEMY_SPELLS: Record<string, EnemyAction> = {
     canInterrupt: true,
     castAnimation: 'shield',
     projectileType: 'hex_beam',
-    flavorMessage: 'erects an ancient gilded barrier!',
+    flavorMessage: 'erects an ancient gilded barrier and channels Eternal Power!',
+    selfBuff: { type: 'strengthen', name: 'Eternal Eminence', turns: 2, value: 25 },
   },
   abyssal_lance: {
     spellId: 'abyssal_lance',
@@ -292,7 +313,9 @@ export const ENEMY_SPELLS: Record<string, EnemyAction> = {
     canInterrupt: false,
     castAnimation: 'hex',
     projectileType: 'hex_beam',
-    flavorMessage: 'warps time around your footing to punish evasion!',
+    flavorMessage: 'warps time around your footing, sapping stamina and chilling your casts!',
+    inflictStatus: { type: 'frost', name: 'Chronal Chill', turns: 2, value: 15 },
+    staminaDrain: 25,
   },
   apocalypse_singularity: {
     spellId: 'apocalypse_singularity',
@@ -308,6 +331,8 @@ export const ENEMY_SPELLS: Record<string, EnemyAction> = {
     castAnimation: 'fire',
     projectileType: 'fire_orb',
     flavorMessage: 'condenses an apocalyptic golden singularity across all lanes!',
+    inflictStatus: { type: 'burn', name: 'Astral Ruin', turns: 3, value: 12 },
+    manaDrain: 15,
   },
 };
 
@@ -377,43 +402,54 @@ export function decideEnemyIntent(
 
   // Stage 3 bosses are more aggressive with ultimate/all-lane spells
   const bossStage = enemy.bossStage ?? 1;
-  if (bossStage >= 3 && hasSpell('cataclysm_blast') && enemy.mana >= 35 && Math.random() < 0.65) {
+  if (bossStage >= 3 && hasSpell('apocalypse_singularity') && enemy.mana >= 48 && Math.random() < 0.55) {
+    return makeIntent('apocalypse_singularity', 'ultimate');
+  }
+  if (bossStage >= 3 && hasSpell('cataclysm_blast') && enemy.mana >= 35 && Math.random() < 0.6) {
     return makeIntent('cataclysm_blast', 'ultimate');
   }
-  if (bossStage >= 3 && hasSpell('crystalline_burst') && enemy.mana >= 30 && Math.random() < 0.65) {
+  if (bossStage >= 3 && hasSpell('crystalline_burst') && enemy.mana >= 30 && Math.random() < 0.6) {
     return makeIntent('crystalline_burst', 'ultimate');
+  }
+  if (bossStage >= 2 && hasSpell('abyssal_lance') && enemy.mana >= 28 && Math.random() < 0.5) {
+    return makeIntent('abyssal_lance', 'attack');
   }
   if (bossStage >= 2 && hasSpell('flank_volley') && enemy.mana >= 24 && Math.random() < 0.55) {
     return makeIntent('flank_volley', 'ultimate');
   }
 
-  // If enemy is below 40% HP and has no shield, prioritize defense or leech
-  if (enemy.hp < enemy.maxHp * 0.4 && enemy.shield === 0) {
-    if (hasSpell('nether_ward') && enemy.mana >= 15 && Math.random() < 0.55) {
+  // If enemy has no shield, weave wards/strengthen or leech dynamically
+  if (enemy.shield === 0) {
+    const wardChance = enemy.hp < enemy.maxHp * 0.5 ? 0.55 : 0.25;
+    if (hasSpell('arcane_ward_vorath') && enemy.mana >= 24 && Math.random() < wardChance) {
+      return makeIntent('arcane_ward_vorath', 'defense');
+    }
+    if (hasSpell('nether_ward') && enemy.mana >= 15 && Math.random() < wardChance) {
       return makeIntent('nether_ward', 'defense');
     }
-    if (hasSpell('leech_vitality') && enemy.mana >= 15) {
+    if (enemy.hp < enemy.maxHp * 0.55 && hasSpell('leech_vitality') && enemy.mana >= 15 && Math.random() < 0.5) {
       return makeIntent('leech_vitality', 'attack');
     }
   }
 
-  // If enemy has high mana and player has no shield, go for heavy/multi-lane attack
-  if (hasSpell('cataclysm_blast') && enemy.mana >= 35 && player.shield === 0 && Math.random() < 0.45) {
-    return makeIntent('cataclysm_blast', 'ultimate');
-  }
-
-  // Hex if player doesn't have weaken
+  // Hex / Chronal Snare if player lacks weaken/frost
   const playerWeakened = player.statusEffects.some((s) => s.type === 'weaken');
-  if (hasSpell('dread_hex') && !playerWeakened && enemy.mana >= 18 && Math.random() < 0.35) {
+  const playerFrosted = player.statusEffects.some((s) => s.type === 'frost');
+  if (hasSpell('chronal_snare') && !playerFrosted && enemy.mana >= 22 && Math.random() < 0.4) {
+    return makeIntent('chronal_snare', 'hex');
+  }
+  if (hasSpell('dread_hex') && !playerWeakened && enemy.mana >= 18 && Math.random() < 0.4) {
     return makeIntent('dread_hex', 'hex');
   }
 
-  // Pick first affordable offensive spell in pool
-  for (const id of pool) {
+  // Pick a random affordable offensive spell in pool for variety
+  const affordableOffensive = pool.filter((id) => {
     const act = ENEMY_SPELLS[id];
-    if (act && act.type === 'attack' && enemy.mana >= act.manaCost) {
-      return makeIntent(id, 'attack');
-    }
+    return act && act.type === 'attack' && enemy.mana >= act.manaCost;
+  });
+  if (affordableOffensive.length > 0) {
+    const pick = affordableOffensive[Math.floor(Math.random() * affordableOffensive.length)];
+    return makeIntent(pick, 'attack');
   }
 
   // Fallback

@@ -284,6 +284,119 @@ class SoundEngine {
       // Audio errors should never crash user interactions
     }
   }
+  /**
+   * Soft restorative chime for healing spells
+   */
+  public playHealChime(): void {
+    try {
+      if (this.isMuted) return;
+      const notes = [523.25, 659.25, 783.99];
+      notes.forEach((freq, i) => {
+        setTimeout(() => {
+          try {
+            const ctx = this.getAudioContext();
+            if (!ctx) return;
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(freq, ctx.currentTime);
+            gain.gain.setValueAtTime(0.16 * this.masterVolume, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.24);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.25);
+          } catch {
+            // Ignored
+          }
+        }, i * 70);
+      });
+    } catch {
+      // Audio errors should never crash user interactions
+    }
+  }
+
+  /**
+   * Resonant magical barrier hum
+   */
+  public playShieldResonance(): void {
+    try {
+      if (this.isMuted) return;
+      const ctx = this.getAudioContext();
+      if (!ctx) return;
+      const t = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(220, t);
+      osc.frequency.exponentialRampToValueAtTime(440, t + 0.18);
+      gain.gain.setValueAtTime(0.2 * this.masterVolume, t);
+      gain.gain.exponentialRampToValueAtTime(0.01, t + 0.25);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(t + 0.26);
+    } catch {
+      // Ignored
+    }
+  }
+
+  /**
+   * Element-specific impact sound
+   */
+  public playElementalImpact(
+    element: 'fire' | 'ice' | 'lightning' | 'arcane' | 'poison' | 'defense' | 'heal',
+    isCritical: boolean = false
+  ): void {
+    try {
+      if (this.isMuted) return;
+      const ctx = this.getAudioContext();
+      if (!ctx) {
+        this.playHit(isCritical);
+        return;
+      }
+      const t = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      switch (element) {
+        case 'fire':
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(isCritical ? 160 : 120, t);
+          osc.frequency.exponentialRampToValueAtTime(35, t + 0.24);
+          break;
+        case 'ice':
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(1400, t);
+          osc.frequency.exponentialRampToValueAtTime(420, t + 0.14);
+          break;
+        case 'lightning':
+          osc.type = 'square';
+          osc.frequency.setValueAtTime(980, t);
+          osc.frequency.exponentialRampToValueAtTime(180, t + 0.1);
+          break;
+        case 'poison':
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(260, t);
+          osc.frequency.linearRampToValueAtTime(130, t + 0.22);
+          break;
+        default:
+          osc.type = isCritical ? 'sawtooth' : 'triangle';
+          osc.frequency.setValueAtTime(isCritical ? 320 : 210, t);
+          osc.frequency.exponentialRampToValueAtTime(60, t + 0.18);
+          break;
+      }
+
+      gain.gain.setValueAtTime((isCritical ? 0.34 : 0.22) * this.masterVolume, t);
+      gain.gain.exponentialRampToValueAtTime(0.01, t + 0.24);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(t + 0.25);
+    } catch {
+      // Ignored
+    }
+  }
 }
 
 export const soundEngine = new SoundEngine();

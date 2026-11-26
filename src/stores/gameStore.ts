@@ -2,12 +2,15 @@ import { create } from 'zustand';
 import { GameScene } from '../engine/types';
 import { soundEngine } from '../voice/soundEngine';
 
+export type VfxQuality = 'low' | 'medium' | 'high';
+
 interface GameSettings {
   masterVolume: number;
   isMuted: boolean;
   crtOverlay: boolean;
   screenShake: boolean;
   showDamageNumbers: boolean;
+  vfxQuality: VfxQuality;
 }
 
 interface GameState {
@@ -20,6 +23,7 @@ interface GameState {
   toggleMute: () => void;
   toggleCrtOverlay: () => void;
   toggleScreenShake: () => void;
+  setVfxQuality: (quality: VfxQuality) => void;
 }
 
 export const useGameStore = create<GameState>((set) => ({
@@ -31,6 +35,7 @@ export const useGameStore = create<GameState>((set) => ({
     crtOverlay: true,
     screenShake: true,
     showDamageNumbers: true,
+    vfxQuality: 'high',
   },
   setScene: (scene: GameScene) => set({ currentScene: scene }),
   togglePause: () => set((state) => ({ isPaused: !state.isPaused })),
@@ -57,6 +62,11 @@ export const useGameStore = create<GameState>((set) => ({
   toggleScreenShake: () => {
     set((state) => ({
       settings: { ...state.settings, screenShake: !state.settings.screenShake },
+    }));
+  },
+  setVfxQuality: (vfxQuality: VfxQuality) => {
+    set((state) => ({
+      settings: { ...state.settings, vfxQuality },
     }));
   },
 }));

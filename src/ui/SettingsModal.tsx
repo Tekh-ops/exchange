@@ -16,6 +16,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     toggleMute,
     toggleCrtOverlay,
     toggleScreenShake,
+    setVfxQuality,
   } = useGameStore();
 
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettingsConfig>(() => loadVoiceSettings());
@@ -120,6 +121,31 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             >
               {settings.screenShake ? 'ON' : 'OFF'}
             </button>
+          </div>
+
+          {/* VFX Quality Selector */}
+          <div className="flex items-center justify-between p-2.5 bg-purple-950/40 rounded border border-purple-900/50">
+            <span className="flex items-center gap-2 text-gray-200">
+              <Zap size={16} className="text-amber-400" />
+              <span className="font-pixel text-[11px]">VFX QUALITY</span>
+            </span>
+            <div className="flex gap-1">
+              {(['low', 'medium', 'high'] as const).map((q) => (
+                <button
+                  key={q}
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playClick();
+                    setVfxQuality(q);
+                  }}
+                  className={`pixel-btn px-2 py-1 text-[9px] font-pixel uppercase cursor-pointer ${
+                    settings.vfxQuality === q ? 'text-amber-300 border-amber-400' : 'text-gray-400'
+                  }`}
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Voice Casting Section */}

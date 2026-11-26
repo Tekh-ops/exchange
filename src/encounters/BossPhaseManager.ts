@@ -9,6 +9,9 @@ export interface BossStageConfig {
   transitionDialogue: string;
   auraColor: number;
   summonTemplateId?: string;
+  phaseShieldBonus?: number;
+  cleansesDebuffs?: boolean;
+  shiftsLane?: boolean;
 }
 
 export const BOSS_STAGES: Record<string, BossStageConfig[]> = {
@@ -30,6 +33,8 @@ export const BOSS_STAGES: Record<string, BossStageConfig[]> = {
       unlockedSpells: ['void_bolt', 'nether_ward', 'dread_hex', 'leech_vitality', 'flank_volley'],
       transitionDialogue: 'Enough insolence! Witness true Nethermancy!',
       auraColor: 0xf59e0b,
+      phaseShieldBonus: 45,
+      cleansesDebuffs: true,
     },
     {
       stage: 3,
@@ -39,6 +44,9 @@ export const BOSS_STAGES: Record<string, BossStageConfig[]> = {
       unlockedSpells: ['void_bolt', 'cataclysm_blast', 'leech_vitality', 'flank_volley'],
       transitionDialogue: 'I SHALL REDUCE YOUR DISSERTATION AND YOUR ROBES TO ASH!',
       auraColor: 0xef4444,
+      phaseShieldBonus: 70,
+      cleansesDebuffs: true,
+      shiftsLane: true,
     },
   ],
   crystal_archon: [
@@ -59,6 +67,8 @@ export const BOSS_STAGES: Record<string, BossStageConfig[]> = {
       unlockedSpells: ['prism_lance', 'lane_beam', 'nether_ward'],
       transitionDialogue: 'The lattice tightens. Choose your lane wisely.',
       auraColor: 0x818cf8,
+      phaseShieldBonus: 60,
+      cleansesDebuffs: true,
     },
     {
       stage: 3,
@@ -68,6 +78,9 @@ export const BOSS_STAGES: Record<string, BossStageConfig[]> = {
       unlockedSpells: ['prism_lance', 'lane_beam', 'crystalline_burst'],
       transitionDialogue: 'FRACTURE THE REALM! NO LANE SHALL SHELTER YOU!',
       auraColor: 0xf43f5e,
+      phaseShieldBonus: 90,
+      cleansesDebuffs: true,
+      shiftsLane: true,
     },
   ],
   shadow_conjurer: [
@@ -88,6 +101,8 @@ export const BOSS_STAGES: Record<string, BossStageConfig[]> = {
       unlockedSpells: ['shadow_ambush', 'flank_volley', 'dread_hex'],
       transitionDialogue: 'Step left, step right—my blades wait in both!',
       auraColor: 0xc026d3,
+      phaseShieldBonus: 40,
+      shiftsLane: true,
     },
     {
       stage: 3,
@@ -97,6 +112,9 @@ export const BOSS_STAGES: Record<string, BossStageConfig[]> = {
       unlockedSpells: ['shadow_ambush', 'flank_volley', 'leech_vitality', 'cataclysm_blast'],
       transitionDialogue: 'DARKNESS CONSUMES ALL LANES!',
       auraColor: 0xbe123c,
+      phaseShieldBonus: 65,
+      cleansesDebuffs: true,
+      shiftsLane: true,
     },
   ],
   vorath: [
@@ -118,6 +136,8 @@ export const BOSS_STAGES: Record<string, BossStageConfig[]> = {
       transitionDialogue: 'Impressive persistence, child. Let us see how you fare against the Forbidden Lattice!',
       auraColor: 0xd4af37,
       summonTemplateId: 'void_wisp',
+      phaseShieldBonus: 250,
+      cleansesDebuffs: true,
     },
     {
       stage: 3,
@@ -128,6 +148,8 @@ export const BOSS_STAGES: Record<string, BossStageConfig[]> = {
       transitionDialogue: 'ENOUGH! I HAVE OUTLIVED EMPIRES—WITNESS THE END OF AGES!',
       auraColor: 0xef4444,
       summonTemplateId: 'eternal_construct',
+      phaseShieldBonus: 500,
+      cleansesDebuffs: true,
     },
   ],
 };
@@ -165,6 +187,10 @@ export class BossPhaseManager {
       const prevConfig = stages.find((s) => s.stage === currentStage);
       const powerDelta = targetConfig.spellPowerBonus - (prevConfig?.spellPowerBonus ?? 0);
 
+      const filteredStatuses = targetConfig.cleansesDebuffs
+        ? entity.statusEffects.filter((s) => s.type === 'strengthen')
+        : entity.statusEffects;
+
       return {
         transitioned: true,
         newStage: targetConfig.stage,
@@ -173,6 +199,8 @@ export class BossPhaseManager {
           ...entity,
           bossStage: targetConfig.stage,
           spellPower: entity.spellPower + powerDelta,
+          shield: entity.shield + (targetConfig.phaseShieldBonus ?? 0),
+          statusEffects: filteredStatuses,
         },
       };
     }

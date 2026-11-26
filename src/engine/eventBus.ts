@@ -15,7 +15,27 @@ export type GameEventMap = {
   'SCREEN_SHAKE': ScreenShakePayload;
   'ENTITY_ANIMATION': { entityId: string; state: 'idle' | 'cast' | 'hurt' | 'victory' | 'defeat' };
   'ENEMY_EMOTION_CHANGED': { entityId?: string; emotion: 'neutral' | 'amused' | 'confident' | 'surprised' | 'frustrated' | 'angry' | 'desperate' | 'fearful' | 'triumphant' | 'defeated'; reason: string };
-  'SPELL_CAST_EFFECT': { spellId: string; source: 'player' | 'enemy'; target: 'player' | 'enemy' };
+  'SPELL_CAST_EFFECT': {
+    spellId: string;
+    source: 'player' | 'enemy';
+    target: 'player' | 'enemy';
+    element?: 'fire' | 'ice' | 'lightning' | 'arcane' | 'poison' | 'defense' | 'heal';
+    isCharged?: boolean;
+    startX?: number;
+    startY?: number;
+    targetX?: number;
+    targetY?: number;
+    affectedLanes?: ('left' | 'center' | 'right')[];
+    bossStage?: number;
+    bossId?: string;
+  };
+  'LIFESTEAL_STREAM': {
+    startX: number;
+    startY: number;
+    targetX: number;
+    targetY: number;
+    amount: number;
+  };
   'TRIGGER_SOUND': { sound: string; pitchModifier?: number; volumeModifier?: number };
   'BATTLE_LOG': { message: string; type: 'player' | 'enemy' | 'system' | 'critical' };
 };

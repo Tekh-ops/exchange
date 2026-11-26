@@ -5,7 +5,10 @@ import { ArenaBackground } from './ArenaBackground';
 import { WizardEntity } from '../entities/WizardEntity';
 import { ProjectileManager } from '../entities/ProjectileManager';
 import { CombatTextManager } from '../entities/CombatTextManager';
+import { SpellEffectManager } from '../effects/SpellEffectManager';
 import { useCombatStore } from '../stores/combatStore';
+import { useGameStore } from '../stores/gameStore';
+import { VFX_QUALITY_BUDGETS } from '../effects/ElementalEffects';
 import { gameEvents } from '../engine/eventBus';
 import { gameCamera } from '../engine/camera';
 import { LANE_COORDS } from '../combat/LaneSystem';
@@ -42,7 +45,10 @@ export function BattleScene() {
 
   useEffect(() => {
     const unsub = gameEvents.on('SCREEN_SHAKE', (payload) => {
-      gameCamera.triggerShake(payload.intensity, payload.durationMs);
+      const { screenShake, vfxQuality } = useGameStore.getState().settings;
+      if (!screenShake) return;
+      const scale = VFX_QUALITY_BUDGETS[vfxQuality].shakeScale;
+      gameCamera.triggerShake(payload.intensity * scale, payload.durationMs);
     });
     return () => unsub();
   }, []);
@@ -110,6 +116,7 @@ export function BattleScene() {
         );
       })}
 
+      <SpellEffectManager />
       <ProjectileManager />
       <CombatTextManager />
     </pixiContainer>

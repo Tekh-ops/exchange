@@ -5,6 +5,9 @@ import { TextureCache } from './pixelTextures';
 import { gameEvents } from '../engine/eventBus';
 import { CombatEntity } from '../combat/combatTypes';
 import { EnemyEmotion } from '../ai/EnemyEmotionSystem';
+import { drawEntityStatusVisuals } from '../effects/StatusEffectVisuals';
+import { useCombatStore } from '../stores/combatStore';
+import { useGameStore } from '../stores/gameStore';
 
 interface WizardEntityProps {
   type: 'player' | 'enemy';
@@ -163,35 +166,25 @@ export function WizardEntity({ type, entity, baseX, baseY }: WizardEntityProps) 
     spriteRef.current.rotation = rotation;
     spriteRef.current.alpha = entity.hp <= 0 ? 0.45 : 1;
 
-    // Render Emotion Auras and FX
-    if (emotionFxRef.current && type === 'enemy') {
+    // Render Status Visuals (for both player and enemies) & Emotion Auras (enemies)
+    if (emotionFxRef.current) {
       const efx = emotionFxRef.current;
-      efx.clear();
+      const isLow = useGameStore.getState().settings.vfxQuality === 'low';
+      const chargedSpell = type === 'player' ? useCombatStore.getState().chargedSpell : null;
 
-      if (entity.hp > 0) {
-        if (entity.isStaggered) {
-          const spin = timeRef.current * 6;
-          for (let s = 0; s < 3; s++) {
-            const ang = spin + (s * Math.PI * 2) / 3;
-            efx.circle(Math.cos(ang) * 22, -56 + Math.sin(ang) * 6, 3.5);
-            efx.fill({ color: 0xfacc15, alpha: 0.95 });
-          }
+      drawEntityStatusVisuals(efx, entity, timeRef.current, {
+        chargedSpell,
+        isLowQuality: isLow,
+      });
+
+      if (type === 'enemy' && entity.hp > 0) {
+        // Boss phase aura ring
+        if (entity.isBoss && (entity.bossStage ?? 1) >= 2) {
+          const bossAuraCol = (entity.bossStage ?? 1) >= 3 ? 0xef4444 : 0xd4af37;
+          const pulse = Math.sin(timeRef.current * 4) * 3;
+          efx.ellipse(0, 42, 46 + pulse, 13 + pulse * 0.3);
+          efx.stroke({ width: 2, color: bossAuraCol, alpha: 0.65 });
         }
-
-        // Orbiting status effect indicators (poison, burn, frost, weaken)
-        entity.statusEffects.forEach((st, idx) => {
-          const statusColor =
-            st.type === 'poison'
-              ? 0x10b981
-              : st.type === 'burn'
-              ? 0xf97316
-              : st.type === 'frost'
-              ? 0x38bdf8
-              : 0xa855f7;
-          const ang = timeRef.current * 3 + idx * 2.1;
-          efx.circle(Math.cos(ang) * 34, 10 + Math.sin(ang) * 14, 3);
-          efx.fill({ color: statusColor, alpha: 0.9 });
-        });
 
         switch (currentEmotion) {
         case 'angry': {

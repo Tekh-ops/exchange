@@ -49,6 +49,10 @@ export interface ProjectileEventPayload {
   targetY: number;
   speed: number;
   color: number;
+  spellId?: string;
+  element?: 'fire' | 'ice' | 'lightning' | 'arcane' | 'poison' | 'defense' | 'void';
+  isCharged?: boolean;
+  bossStage?: number;
   onHit?: () => void;
 }
 
