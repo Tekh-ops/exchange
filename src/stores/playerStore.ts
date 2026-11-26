@@ -27,6 +27,7 @@ const DEFAULT_PREPARED_IDS = [
   'frigid_snub',
   'ego_shield',
   'cursed_hex',
+  'siphon_pride',
 ];
 
 const INITIAL_UNLOCKED_SPELLS = getUnlockedSpellsForLevel(1, []);
@@ -233,7 +234,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     const extra = get().equipment.reduce((acc, eq) => acc + (eq.extraSpellSlots || 0), 0);
     const level = get().progression.level;
     const levelBonus = (level >= 4 ? 1 : 0) + (level >= 8 ? 1 : 0);
-    return 5 + extra + levelBonus;
+    return 6 + extra + levelBonus;
   },
 
   getUnlockedSpells: () => {

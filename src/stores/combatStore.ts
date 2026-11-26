@@ -975,11 +975,12 @@ export const useCombatStore = create<CombatState>((set, get) => ({
           }
         });
 
-        if (spell.lifestealRatio && totalActualDamageForLifesteal > 0) {
+        const effectiveLifestealRatio = Math.max(0.2, spell.lifestealRatio ?? 0);
+        if (totalActualDamageForLifesteal > 0) {
           const stealRes = HealingSystem.applyLifesteal(
             currentPlayer,
             totalActualDamageForLifesteal,
-            spell.lifestealRatio,
+            effectiveLifestealRatio,
             healMult
           );
           currentPlayer = { ...currentPlayer, hp: stealRes.newHp };

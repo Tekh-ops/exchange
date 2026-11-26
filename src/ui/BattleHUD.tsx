@@ -128,6 +128,12 @@ export function BattleHUD() {
               {player.name} <span className="text-[9px] text-purple-300">LV.{playerStore.progression.level}</span>
             </span>
             <div className="flex items-center gap-1">
+              <span
+                className="font-pixel text-[8px] text-rose-300 px-1.5 py-0.5 rounded bg-rose-950/70 border border-rose-700/60"
+                title="Innate Lifesteal: offensive spells restore 20% of damage dealt (Siphon Pride: 75%)"
+              >
+                20% LEECH
+              </span>
               <span className="font-pixel text-[8px] text-purple-200 px-1.5 py-0.5 rounded bg-purple-950/80 border border-purple-700/60 uppercase">
                 {player.lane ?? 'center'}
               </span>

@@ -75,7 +75,7 @@ export const SPELL_UNLOCK_LEVELS: Record<string, number> = {
   ego_shield: 1,
   cursed_hex: 1,
   mend_minor_miracles: 1,
-  siphon_pride: 2,
+  siphon_pride: 1,
   pyro_tantrum: 3,
   reversal_of_misfortune: 5,
 };
