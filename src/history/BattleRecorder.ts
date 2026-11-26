@@ -51,6 +51,23 @@ export class BattleRecorder {
   private punishmentSuccesses = 0;
   private strategyChanges = 0;
 
+  // Phase 9 advanced combat tracking
+  private enemiesDefeated = 0;
+  private totalEnemies = 1;
+  private dodgeAttempts = 0;
+  private successfulDodges = 0;
+  private perfectDodges = 0;
+  private damageAvoided = 0;
+  private laneChanges = 0;
+  private chargedSpellsCast = 0;
+  private interruptedSpells = 0;
+  private postureDamageDealt = 0;
+  private enemiesStaggered = 0;
+  private bossStagesCleared = 0;
+  private wastedHealing = 0;
+  private voiceCasts = 0;
+  private voiceFailures = 0;
+
   // Timeline
   private timeline: BattleTimelineEvent[] = [];
   private currentTurn = 1;
@@ -279,6 +296,87 @@ export class BattleRecorder {
     );
   }
 
+  // ─── Phase 9 Recording Methods ────────────────────────────────────
+
+  public setTotalEnemies(count: number): void {
+    this.totalEnemies = Math.max(1, count);
+  }
+
+  public recordLaneChange(newLane: string): void {
+    if (this.finalized) return;
+    this.laneChanges += 1;
+    this.addTimelineEvent('lane_changed', 'player', `Moved to ${newLane.toUpperCase()} lane`);
+  }
+
+  public recordDodgeResult(
+    evaded: boolean,
+    isPerfect: boolean,
+    avoidedAmount: number,
+    reason: string
+  ): void {
+    if (this.finalized) return;
+    this.dodgeAttempts += 1;
+    if (evaded) this.successfulDodges += 1;
+    if (isPerfect) this.perfectDodges += 1;
+    this.damageAvoided += avoidedAmount;
+    this.addTimelineEvent(
+      isPerfect ? 'perfect_dodge' : evaded ? 'dodge_succeeded' : 'dodge_attempted',
+      'player',
+      reason,
+      { value: avoidedAmount }
+    );
+  }
+
+  public recordChargedSpell(spellName: string): void {
+    if (this.finalized) return;
+    this.chargedSpellsCast += 1;
+    this.addTimelineEvent('spell_charged', 'player', `Charged ${spellName}`, { spellName });
+  }
+
+  public recordSpellInterrupted(spellName: string): void {
+    if (this.finalized) return;
+    this.interruptedSpells += 1;
+    this.addTimelineEvent('spell_interrupted', 'enemy', `Interrupted ${spellName}!`, { spellName });
+  }
+
+  public recordPostureAndStagger(postureDmg: number, triggeredStagger: boolean, enemyName: string): void {
+    if (this.finalized) return;
+    this.postureDamageDealt += postureDmg;
+    if (triggeredStagger) {
+      this.enemiesStaggered += 1;
+      this.addTimelineEvent('enemy_staggered', 'player', `Staggered ${enemyName}!`, { value: postureDmg });
+    }
+  }
+
+  public recordEnemyDefeated(enemyName: string): void {
+    if (this.finalized) return;
+    this.enemiesDefeated += 1;
+    this.addTimelineEvent('enemy_defeated', 'player', `Defeated ${enemyName}!`);
+  }
+
+  public recordBossStageTransition(bossName: string, stage: number): void {
+    if (this.finalized) return;
+    this.bossStagesCleared += 1;
+    this.addTimelineEvent('boss_stage_transition', 'enemy', `${bossName} entered Stage ${stage}!`);
+  }
+
+  public recordWastedHealing(wasted: number): void {
+    if (this.finalized) return;
+    this.wastedHealing += wasted;
+  }
+
+  public recordVoiceAttempt(success: boolean, spellName?: string): void {
+    if (this.finalized) return;
+    if (success) {
+      this.voiceCasts += 1;
+      if (spellName) {
+        this.addTimelineEvent('voice_cast', 'player', `Voice-cast ${spellName}`, { spellName });
+      }
+    } else {
+      this.voiceFailures += 1;
+    }
+  }
+
   // ─── Finalization ─────────────────────────────────────────────────
 
   public finalize(
@@ -287,13 +385,14 @@ export class BattleRecorder {
     rewards: ProgressionRewards
   ): BattleRecord | null {
     if (this.finalized) return null;
-    this.finalized = true;
 
     const durationMs = Date.now() - this.startTime;
 
     this.addTimelineEvent('battle_ended', 'system', `Battle ended: ${outcome}`, {
       metadata: { outcome },
     });
+
+    this.finalized = true;
 
     // Compute spell usage stats
     const spellUsage = this.buildSpellUsageStats();
@@ -317,6 +416,23 @@ export class BattleRecorder {
       adaptiveAI,
       progression: rewards,
       timeline: [...this.timeline],
+      advancedCombat: {
+        enemiesDefeated: this.enemiesDefeated,
+        totalEnemies: this.totalEnemies,
+        dodgeAttempts: this.dodgeAttempts,
+        successfulDodges: this.successfulDodges,
+        perfectDodges: this.perfectDodges,
+        damageAvoided: this.damageAvoided,
+        laneChanges: this.laneChanges,
+        chargedSpellsCast: this.chargedSpellsCast,
+        interruptedSpells: this.interruptedSpells,
+        postureDamageDealt: this.postureDamageDealt,
+        enemiesStaggered: this.enemiesStaggered,
+        bossStagesCleared: this.bossStagesCleared,
+        wastedHealing: this.wastedHealing,
+        voiceCasts: this.voiceCasts,
+        voiceFailures: this.voiceFailures,
+      },
     };
   }
 

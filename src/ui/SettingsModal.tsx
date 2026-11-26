@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import { useGameStore } from '../stores/gameStore';
 import { soundEngine } from '../voice/soundEngine';
-import { Volume2, VolumeX, Monitor, Zap, X } from 'lucide-react';
+import { loadVoiceSettings, saveVoiceSettings, VoiceSettingsConfig } from '../voice/VoiceSettings';
+import { Volume2, VolumeX, Monitor, Zap, X, Mic } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -16,11 +18,19 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     toggleScreenShake,
   } = useGameStore();
 
+  const [voiceSettings, setVoiceSettings] = useState<VoiceSettingsConfig>(() => loadVoiceSettings());
+
   if (!isOpen) return null;
+
+  const updateVoice = (patch: Partial<VoiceSettingsConfig>) => {
+    const next = { ...voiceSettings, ...patch };
+    setVoiceSettings(next);
+    saveVoiceSettings(next);
+  };
 
   return (
     <div className="absolute inset-0 z-50 pointer-events-auto bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="pixel-box-gold w-[420px] p-6 relative">
+      <div className="pixel-box-gold w-[460px] max-w-[95%] max-h-[90vh] overflow-y-auto p-6 relative">
         <button
           type="button"
           onClick={() => {
@@ -36,7 +46,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           <span>ARCANE CONFIGURATION</span>
         </h2>
 
-        <div className="space-y-5 font-lore text-sm">
+        <div className="space-y-4 font-lore text-sm">
           {/* Master Volume */}
           <div>
             <div className="flex justify-between items-center mb-1 text-gray-200">
@@ -110,6 +120,57 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             >
               {settings.screenShake ? 'ON' : 'OFF'}
             </button>
+          </div>
+
+          {/* Voice Casting Section */}
+          <div className="pt-2 border-t border-purple-900/60 space-y-2.5">
+            <div className="flex items-center gap-2 font-pixel text-[11px] text-amber-300">
+              <Mic size={15} /> VOICE SPELLCASTING
+            </div>
+
+            <div className="flex items-center justify-between p-2.5 bg-purple-950/40 rounded border border-purple-900/50">
+              <span className="font-pixel text-[10px] text-gray-200">ENABLE VOICE CAST</span>
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playClick();
+                  updateVoice({ enabled: !voiceSettings.enabled });
+                }}
+                className={`pixel-btn px-3 py-1 text-[10px] font-pixel cursor-pointer ${
+                  voiceSettings.enabled ? 'text-green-400' : 'text-gray-400'
+                }`}
+              >
+                {voiceSettings.enabled ? 'ON' : 'OFF'}
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between p-2.5 bg-purple-950/40 rounded border border-purple-900/50">
+              <span className="font-pixel text-[10px] text-gray-200">MIC ACTIVATION</span>
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playClick();
+                  updateVoice({
+                    mode: voiceSettings.mode === 'push-to-talk' ? 'toggle' : 'push-to-talk',
+                  });
+                }}
+                className="pixel-btn px-3 py-1 text-[10px] font-pixel text-purple-200 cursor-pointer uppercase"
+              >
+                {voiceSettings.mode === 'push-to-talk' ? 'HOLD (PTT)' : 'CLICK TOGGLE'}
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between p-2.5 bg-purple-950/40 rounded border border-purple-900/50">
+              <span className="font-pixel text-[10px] text-gray-200">LANGUAGE</span>
+              <select
+                value={voiceSettings.language}
+                onChange={(e) => updateVoice({ language: e.target.value })}
+                className="bg-[#090612] border border-purple-800 rounded px-2 py-1 font-pixel text-[10px] text-amber-200"
+              >
+                <option value="en-US">en-US</option>
+                <option value="en-GB">en-GB</option>
+              </select>
+            </div>
           </div>
         </div>
 

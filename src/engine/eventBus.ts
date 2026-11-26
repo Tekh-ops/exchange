@@ -13,8 +13,8 @@ export type GameEventMap = {
   'PROJECTILE_FIRED': ProjectileEventPayload;
   'SPAWN_COMBAT_TEXT': FloatingCombatTextPayload;
   'SCREEN_SHAKE': ScreenShakePayload;
-  'ENTITY_ANIMATION': { entityId: 'player' | 'enemy'; state: 'idle' | 'cast' | 'hurt' | 'victory' | 'defeat' };
-  'ENEMY_EMOTION_CHANGED': { emotion: 'neutral' | 'amused' | 'confident' | 'surprised' | 'frustrated' | 'angry' | 'desperate' | 'fearful' | 'triumphant' | 'defeated'; reason: string };
+  'ENTITY_ANIMATION': { entityId: string; state: 'idle' | 'cast' | 'hurt' | 'victory' | 'defeat' };
+  'ENEMY_EMOTION_CHANGED': { entityId?: string; emotion: 'neutral' | 'amused' | 'confident' | 'surprised' | 'frustrated' | 'angry' | 'desperate' | 'fearful' | 'triumphant' | 'defeated'; reason: string };
   'SPELL_CAST_EFFECT': { spellId: string; source: 'player' | 'enemy'; target: 'player' | 'enemy' };
   'TRIGGER_SOUND': { sound: string; pitchModifier?: number; volumeModifier?: number };
   'BATTLE_LOG': { message: string; type: 'player' | 'enemy' | 'system' | 'critical' };

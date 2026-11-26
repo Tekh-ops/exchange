@@ -28,7 +28,7 @@ export function WizardEntity({ type, entity, baseX, baseY }: WizardEntityProps) 
   // Subscribe to typed animation requests
   useEffect(() => {
     const unsubAnim = gameEvents.on('ENTITY_ANIMATION', (data) => {
-      if (data.entityId === type) {
+      if (data.entityId === entity.id || data.entityId === type) {
         setAnimState(data.state);
         animTimerRef.current = 0;
       }
@@ -36,7 +36,7 @@ export function WizardEntity({ type, entity, baseX, baseY }: WizardEntityProps) 
 
     // Subscribe to emotion changes if this is the enemy
     const unsubEmotion = gameEvents.on('ENEMY_EMOTION_CHANGED', (data) => {
-      if (type === 'enemy') {
+      if (type === 'enemy' && (!data.entityId || data.entityId === entity.id)) {
         setCurrentEmotion(data.emotion);
       }
     });
@@ -45,7 +45,7 @@ export function WizardEntity({ type, entity, baseX, baseY }: WizardEntityProps) 
       unsubAnim();
       unsubEmotion();
     };
-  }, [type]);
+  }, [type, entity.id]);
 
   // Animation frame loop
   useTick((ticker) => {
@@ -61,8 +61,10 @@ export function WizardEntity({ type, entity, baseX, baseY }: WizardEntityProps) 
     let scaleY = 2.4;
     const scaleX = type === 'player' ? 2.4 : -2.4; // Enemy faces left
 
+    const effectiveState = entity.hp <= 0 ? 'defeat' : animState;
+
     // Basic Action Animations
-    switch (animState) {
+    switch (effectiveState) {
       case 'idle':
         // Breathing bob
         offsetY = Math.sin(timeRef.current * 3) * 4;
@@ -159,13 +161,39 @@ export function WizardEntity({ type, entity, baseX, baseY }: WizardEntityProps) 
     containerRef.current.position.set(baseX + offsetX, baseY + offsetY);
     spriteRef.current.scale.set(scaleX, scaleY);
     spriteRef.current.rotation = rotation;
+    spriteRef.current.alpha = entity.hp <= 0 ? 0.45 : 1;
 
     // Render Emotion Auras and FX
     if (emotionFxRef.current && type === 'enemy') {
       const efx = emotionFxRef.current;
       efx.clear();
 
-      switch (currentEmotion) {
+      if (entity.hp > 0) {
+        if (entity.isStaggered) {
+          const spin = timeRef.current * 6;
+          for (let s = 0; s < 3; s++) {
+            const ang = spin + (s * Math.PI * 2) / 3;
+            efx.circle(Math.cos(ang) * 22, -56 + Math.sin(ang) * 6, 3.5);
+            efx.fill({ color: 0xfacc15, alpha: 0.95 });
+          }
+        }
+
+        // Orbiting status effect indicators (poison, burn, frost, weaken)
+        entity.statusEffects.forEach((st, idx) => {
+          const statusColor =
+            st.type === 'poison'
+              ? 0x10b981
+              : st.type === 'burn'
+              ? 0xf97316
+              : st.type === 'frost'
+              ? 0x38bdf8
+              : 0xa855f7;
+          const ang = timeRef.current * 3 + idx * 2.1;
+          efx.circle(Math.cos(ang) * 34, 10 + Math.sin(ang) * 14, 3);
+          efx.fill({ color: statusColor, alpha: 0.9 });
+        });
+
+        switch (currentEmotion) {
         case 'angry': {
           // Radiating aggressive crimson aura
           const pulse = Math.sin(timeRef.current * 12) * 6;
@@ -228,6 +256,7 @@ export function WizardEntity({ type, entity, baseX, baseY }: WizardEntityProps) 
           efx.ellipse(0, 6, 38 + fearPulse, 44 + fearPulse);
           efx.stroke({ width: 1.5, color: 0x94a3b8, alpha: 0.6 });
           break;
+        }
         }
       }
     }

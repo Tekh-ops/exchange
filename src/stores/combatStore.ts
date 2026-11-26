@@ -1,8 +1,8 @@
 import { create } from 'zustand';
-import { CombatEntity, CombatTurnPhase, EnemyIntent, CombatLogEntry } from '../combat/combatTypes';
+import { CombatEntity, CombatTurnPhase, EnemyIntent, CombatLogEntry, Lane } from '../combat/combatTypes';
 import { Spell, OffensiveElement, isOffensiveElement } from '../spells/types';
 import { calculateSpellDamage, processStatusEffects } from '../combat/damageCalculator';
-import { decideEnemyIntent, ENEMY_SPELLS } from '../ai/enemyAi';
+import { ENEMY_SPELLS } from '../ai/enemyAi';
 import { gameEvents } from '../engine/eventBus';
 import { soundEngine } from '../voice/soundEngine';
 import { EnemyMemory } from '../ai/EnemyMemory';
@@ -15,10 +15,30 @@ import { getContextualLine } from '../dialogue/banterData';
 import { BattleRecorder } from '../history/BattleRecorder';
 import { BattleRecord } from '../history/BattleRecord';
 import { getBattleHistoryRepository } from '../history/BattleHistoryRepository';
+import { EncounterManager, EnemyInstance } from '../encounters/EncounterManager';
+import { EncounterDefinition } from '../encounters/EncounterDefinition';
+import { BossPhaseManager } from '../encounters/BossPhaseManager';
+import { EnemyCoordination } from '../ai/EnemyCoordination';
+import { resolveSpellTargets } from '../combat/TargetingSystem';
+import { DodgeSystem, DodgeType, DODGE_COSTS } from '../combat/DodgeSystem';
+import { HealingSystem } from '../combat/HealingSystem';
+import { PostureSystem } from '../combat/PostureSystem';
+import { ChargingSystem, ChargedSpellState } from '../combat/ChargingSystem';
+import { getNextLane, LANE_COORDS } from '../combat/LaneSystem';
+
+export interface CombatEquipmentBonuses {
+  chargeCostReduction?: number;
+  dodgeEfficiencyBonus?: number;
+  postureDamageMultiplier?: number;
+  healingBonusMultiplier?: number;
+}
 
 interface CombatState {
   player: CombatEntity;
-  enemy: CombatEntity;
+  enemy: CombatEntity; // Primary/selected enemy for backward-compatible HUD & tests
+  enemies: EnemyInstance[];
+  selectedTargetId: string | null;
+  activeEncounter: EncounterDefinition;
   turnNumber: number;
   turnPhase: CombatTurnPhase;
   enemyIntent: EnemyIntent | null;
@@ -26,7 +46,16 @@ interface CombatState {
   combatLogs: CombatLogEntry[];
   dialogueOpen: boolean;
 
-  // Adaptive Intelligence & Emotional System State
+  // Phase 9 Tactical State
+  activeDodge: DodgeType | null;
+  consecutiveDodges: number;
+  perfectDodgeBuff: boolean;
+  chargedSpell: ChargedSpellState | null;
+  chargingMode: boolean;
+  recentDamageTaken: number;
+  equipBonuses: CombatEquipmentBonuses;
+
+  // Adaptive Intelligence & Emotional System State (mirrored from selected/primary enemy)
   enemyMemory: EnemyMemory;
   adaptationEngine: AdaptationEngine;
   predictionEngine: PredictionEngine;
@@ -48,13 +77,19 @@ interface CombatState {
 
   // Actions
   initBattle: (
-    playerMaxHp: number, 
-    playerMaxMana: number, 
-    playerSpellPower: number, 
+    playerMaxHp: number,
+    playerMaxMana: number,
+    playerSpellPower: number,
     playerCritRate: number,
-    initialSpells: Spell[]
+    initialSpells: Spell[],
+    encounterId?: string,
+    equipBonuses?: CombatEquipmentBonuses
   ) => void;
-  castSpell: (spellId: string) => void;
+  selectTarget: (enemyId: string) => void;
+  moveLane: (direction: 'left' | 'right' | 'center') => { success: boolean; reason?: string };
+  toggleChargingMode: () => void;
+  performDodge: (dodgeType: DodgeType, targetLane?: Lane) => { success: boolean; reason?: string };
+  castSpell: (spellId: string, options?: { charge?: boolean; viaVoice?: boolean }) => { success: boolean; reason?: string };
   triggerEnemyAction: () => void;
   concludeTurn: () => void;
   addLog: (text: string, type: 'player' | 'enemy' | 'system' | 'critical') => void;
@@ -63,11 +98,35 @@ interface CombatState {
   toggleAdaptivePanel: () => void;
 }
 
-const memoryInstance = new EnemyMemory({ bossId: 'malakor', windowSize: 12 });
-const adaptationInstance = new AdaptationEngine({ bossId: 'malakor', maxResistance: 0.45 });
-const predictionInstance = new PredictionEngine();
-const predictabilityInstance = new PredictabilitySystem();
-const emotionInstance = new EnemyEmotionSystem();
+const defaultEncounter = EncounterManager.getEncounter('solo_malakor');
+const initialInstances = EncounterManager.createEnemyInstances(defaultEncounter);
+const primaryInitial = initialInstances[0];
+
+function syncPrimaryEnemyFields(enemies: EnemyInstance[], selectedTargetId: string | null) {
+  const living = enemies.filter((e) => e.entity.hp > 0);
+  const selected =
+    living.find((e) => e.entity.id === selectedTargetId) ||
+    living[0] ||
+    enemies[0];
+
+  return {
+    enemy: selected.entity,
+    selectedTargetId: selected.entity.id,
+    enemyIntent: selected.currentIntent,
+    enemyMemory: selected.memory,
+    adaptationEngine: selected.adaptation,
+    predictionEngine: selected.predictionEngine,
+    predictabilitySystem: selected.predictability,
+    enemyEmotionSystem: selected.emotionSystem,
+    currentEnemyEmotion: selected.currentEmotion,
+    currentEmotionReason: selected.currentEmotionReason,
+    currentPrediction: selected.currentPrediction,
+    predictabilityScore: selected.predictabilityScore,
+    predictabilityStage: selected.predictabilityStage,
+    elementResistances: selected.elementResistances,
+    lastPunishmentDescription: selected.lastPunishmentDescription,
+  };
+}
 
 export const useCombatStore = create<CombatState>((set, get) => ({
   player: {
@@ -82,20 +141,16 @@ export const useCombatStore = create<CombatState>((set, get) => ({
     spellPower: 14,
     critRate: 0.1,
     statusEffects: [],
+    lane: 'center',
+    stamina: 100,
+    maxStamina: 100,
+    posture: 0,
+    maxPosture: 60,
   },
-  enemy: {
-    id: 'enemy',
-    name: 'Arch-Mage Malakor',
-    title: 'The Pretentious Nethermancer',
-    hp: 160,
-    maxHp: 160,
-    mana: 100,
-    maxMana: 100,
-    shield: 0,
-    spellPower: 16,
-    critRate: 0.12,
-    statusEffects: [],
-  },
+  enemy: primaryInitial.entity,
+  enemies: initialInstances,
+  selectedTargetId: primaryInitial.entity.id,
+  activeEncounter: defaultEncounter,
   turnNumber: 1,
   turnPhase: 'player_turn',
   enemyIntent: null,
@@ -103,45 +158,53 @@ export const useCombatStore = create<CombatState>((set, get) => ({
   combatLogs: [],
   dialogueOpen: true,
 
-  // Adaptive Systems Initial State
-  enemyMemory: memoryInstance,
-  adaptationEngine: adaptationInstance,
-  predictionEngine: predictionInstance,
-  predictabilitySystem: predictabilityInstance,
-  enemyEmotionSystem: emotionInstance,
+  activeDodge: null,
+  consecutiveDodges: 0,
+  perfectDodgeBuff: false,
+  chargedSpell: null,
+  chargingMode: false,
+  recentDamageTaken: 0,
+  equipBonuses: {},
+
+  enemyMemory: primaryInitial.memory,
+  adaptationEngine: primaryInitial.adaptation,
+  predictionEngine: primaryInitial.predictionEngine,
+  predictabilitySystem: primaryInitial.predictability,
+  enemyEmotionSystem: primaryInitial.emotionSystem,
   currentEnemyEmotion: 'neutral',
   currentEmotionReason: 'Arch-Mage Malakor observes your combat stance impassively.',
   currentPrediction: null,
   predictabilityScore: 0,
   predictabilityStage: 'unpredictable',
-  elementResistances: {
-    fire: 0,
-    ice: 0,
-    lightning: 0,
-    arcane: 0,
-    poison: 0,
-  },
+  elementResistances: { fire: 0, ice: 0, lightning: 0, arcane: 0, poison: 0 },
   lastPunishmentDescription: null,
   contextualRivalBanter: null,
   showAdaptivePanel: false,
 
-  // Battle Chronicle
   battleRecorder: null,
   lastBattleRecord: null,
 
-  initBattle: (playerMaxHp, playerMaxMana, playerSpellPower, playerCritRate, initialSpells) => {
-    // Reset tactical memory & emotion
-    memoryInstance.reset();
-    emotionInstance.reset();
+  initBattle: (
+    playerMaxHp,
+    playerMaxMana,
+    playerSpellPower,
+    playerCritRate,
+    initialSpells,
+    encounterId = 'solo_malakor',
+    equipBonuses = {}
+  ) => {
+    const encounter = EncounterManager.getEncounter(encounterId);
+    const instances = EncounterManager.createEnemyInstances(encounter);
+    const primaryBoss = instances.find((i) => i.entity.isBoss) || instances[0];
 
-    // Initialize battle recorder
     const recorder = new BattleRecorder({
-      gameMode: 'duel',
-      opponentName: 'Arch-Mage Malakor',
-      opponentId: 'malakor',
-      bossName: 'Arch-Mage Malakor',
-      bossId: 'malakor',
+      gameMode: encounter.enemies.length > 1 ? 'campaign' : 'duel',
+      opponentName: encounter.name,
+      opponentId: encounter.id,
+      bossName: primaryBoss.entity.isBoss ? primaryBoss.entity.name : undefined,
+      bossId: primaryBoss.entity.bossId,
     });
+    recorder.setTotalEnemies(instances.length);
 
     const playerEntity: CombatEntity = {
       id: 'player',
@@ -155,65 +218,185 @@ export const useCombatStore = create<CombatState>((set, get) => ({
       spellPower: playerSpellPower,
       critRate: playerCritRate,
       statusEffects: [],
+      lane: 'center',
+      stamina: 100,
+      maxStamina: 100,
+      posture: 0,
+      maxPosture: 60,
     };
 
-    const enemyEntity: CombatEntity = {
-      id: 'enemy',
-      name: 'Arch-Mage Malakor',
-      title: 'The Pretentious Nethermancer',
-      hp: 160,
-      maxHp: 160,
-      mana: 100,
-      maxMana: 100,
-      shield: 0,
-      spellPower: 16,
-      critRate: 0.12,
-      statusEffects: [],
-    };
+    const allLivingEntities = instances.map((i) => i.entity);
 
-    const intent = decideEnemyIntent(enemyEntity, playerEntity);
-    const initialPrediction = predictionInstance.predictNextElement(memoryInstance);
-    memoryInstance.recordPrediction({
-      turn: 1,
-      predictedElement: initialPrediction.predictedElement,
-      confidence: initialPrediction.confidence,
-      reason: initialPrediction.reason,
+    instances.forEach((inst) => {
+      const pred = inst.predictionEngine.predictNextElement(inst.memory);
+      inst.memory.recordPrediction({
+        turn: 1,
+        predictedElement: pred.predictedElement,
+        confidence: pred.confidence,
+        reason: pred.reason,
+      });
+      inst.currentPrediction = pred;
+      inst.currentIntent = EnemyCoordination.decideCoordinatedIntent(
+        inst.entity,
+        allLivingEntities,
+        playerEntity
+      );
     });
 
-    const initialResistances = adaptationInstance.getAllResistances(memoryInstance);
+    if (instances[0].currentPrediction) {
+      recorder.recordPrediction(
+        instances[0].currentPrediction.predictedElement,
+        instances[0].currentPrediction.confidence
+      );
+    }
+
+    const synced = syncPrimaryEnemyFields(instances, instances[0].entity.id);
 
     set({
       player: playerEntity,
-      enemy: enemyEntity,
+      enemies: instances,
+      activeEncounter: encounter,
       turnNumber: 1,
       turnPhase: 'player_turn',
-      enemyIntent: intent,
-      activeSpells: initialSpells.map(s => ({ ...s, currentCooldown: 0 })),
+      activeSpells: initialSpells.map((s) => ({ ...s, currentCooldown: 0 })),
       combatLogs: [
         {
           id: 'log-0',
-          text: '⚔️ Battle commenced in the Obsidian Spire! The Petty Sorcerer prepares to defend his questionable honor.',
+          text: `⚔️ Encounter: ${encounter.name} (${instances.length} ${instances.length === 1 ? 'foe' : 'foes'})!`,
           type: 'system',
           timestamp: new Date().toLocaleTimeString(),
         },
       ],
       dialogueOpen: true,
-      currentEnemyEmotion: 'neutral',
-      currentEmotionReason: 'Arch-Mage Malakor observes your combat stance impassively.',
-      currentPrediction: initialPrediction,
-      predictabilityScore: 0,
-      predictabilityStage: 'unpredictable',
-      elementResistances: initialResistances,
-      lastPunishmentDescription: null,
+      activeDodge: null,
+      consecutiveDodges: 0,
+      perfectDodgeBuff: false,
+      chargedSpell: null,
+      chargingMode: false,
+      recentDamageTaken: 0,
+      equipBonuses,
       contextualRivalBanter: null,
       battleRecorder: recorder,
       lastBattleRecord: null,
+      ...synced,
     });
 
     gameEvents.emit('ENEMY_EMOTION_CHANGED', {
       emotion: 'neutral',
       reason: 'Battle commenced.',
     });
+  },
+
+  selectTarget: (enemyId: string) => {
+    const { enemies, turnPhase } = get();
+    if (turnPhase === 'victory' || turnPhase === 'defeat') return;
+    const found = enemies.find((e) => e.entity.id === enemyId && e.entity.hp > 0);
+    if (!found) return;
+
+    found.memory.recordTargetSelection(enemyId);
+    const synced = syncPrimaryEnemyFields(enemies, enemyId);
+    set({ ...synced });
+  },
+
+  moveLane: (direction: 'left' | 'right' | 'center') => {
+    const { player, turnPhase, battleRecorder } = get();
+    if (turnPhase !== 'player_turn') {
+      return { success: false, reason: 'Can only move lanes during your turn.' };
+    }
+
+    const currentLane: Lane = player.lane ?? 'center';
+    const nextLane: Lane = direction === 'center' ? 'center' : getNextLane(currentLane, direction);
+
+    if (nextLane === currentLane) {
+      return { success: false, reason: `Already in ${currentLane.toUpperCase()} lane.` };
+    }
+
+    const stamina = player.stamina ?? 100;
+    const moveCost = 10;
+    if (stamina < moveCost) {
+      get().addLog(`⚡ Not enough Stamina (${stamina}/${moveCost}) to shift lanes!`, 'system');
+      return { success: false, reason: 'Not enough Stamina to shift lanes.' };
+    }
+
+    set({
+      player: { ...player, lane: nextLane, stamina: stamina - moveCost },
+    });
+
+    get().enemies.forEach((inst) => {
+      if (inst.entity.hp > 0) inst.memory.recordPlayerLane(nextLane);
+    });
+    if (battleRecorder) battleRecorder.recordLaneChange(nextLane);
+    get().addLog(`🏃 Shifted to ${nextLane.toUpperCase()} lane (-${moveCost} Stamina).`, 'player');
+
+    return { success: true };
+  },
+
+  toggleChargingMode: () => set((s) => ({ chargingMode: !s.chargingMode })),
+
+  performDodge: (dodgeType: DodgeType, targetLane?: Lane) => {
+    const { player, turnPhase, consecutiveDodges, battleRecorder } = get();
+    if (turnPhase !== 'player_turn') {
+      return { success: false, reason: 'Cannot dodge outside your turn.' };
+    }
+
+    const stamina = player.stamina ?? 100;
+    const check = DodgeSystem.canAffordDodge(dodgeType, stamina, player.mana);
+    if (!check.canAfford) {
+      get().addLog(`⚠️ Cannot ${dodgeType.replace('_', ' ')}: ${check.reason}`, 'system');
+      return { success: false, reason: check.reason };
+    }
+
+    const cost = DODGE_COSTS[dodgeType];
+    let nextLane: Lane = player.lane ?? 'center';
+    if (dodgeType === 'arcane_blink') {
+      if (targetLane) {
+        nextLane = targetLane;
+      } else {
+        const telegraph = get().enemyIntent?.telegraph;
+        const safe = (['left', 'center', 'right'] as Lane[]).find(
+          (l) => l !== nextLane && (!telegraph || !telegraph.targetLanes.includes(l))
+        );
+        nextLane = safe || (nextLane === 'center' ? 'left' : 'center');
+      }
+      if (battleRecorder && nextLane !== player.lane) {
+        battleRecorder.recordLaneChange(nextLane);
+      }
+    }
+
+    set({
+      turnPhase: 'player_casting',
+      activeDodge: dodgeType,
+      consecutiveDodges: consecutiveDodges + 1,
+      player: {
+        ...player,
+        lane: nextLane,
+        stamina: stamina - cost.staminaCost,
+        mana: player.mana - cost.manaCost,
+      },
+    });
+
+    get().enemies.forEach((inst) => {
+      if (inst.entity.hp > 0) {
+        inst.memory.recordPlayerDodge(dodgeType);
+        inst.memory.recordPlayerLane(nextLane);
+      }
+    });
+
+    const label =
+      dodgeType === 'perfect_dodge'
+        ? '⚡ Perfect Dodge Stance'
+        : dodgeType === 'arcane_blink'
+        ? `✨ Arcane Blink -> ${nextLane.toUpperCase()} Lane`
+        : '💨 Quickstep Evasion';
+
+    get().addLog(`${label} prepared!`, 'player');
+    soundEngine.playSpellCast('shield');
+
+    setTimeout(() => {
+      get().triggerEnemyAction();
+    }, 500);
+
+    return { success: true };
   },
 
   addLog: (text, type) => {
@@ -236,139 +419,218 @@ export const useCombatStore = create<CombatState>((set, get) => ({
 
   fleeBattle: () => {
     get().addLog('🏃 The Petty Sorcerer filed an emergency retreat tactical grievance!', 'system');
+    const { battleRecorder, turnNumber, enemies } = get();
+    if (battleRecorder && !battleRecorder.isFinalized()) {
+      const defeatedCount = enemies.filter((e) => e.entity.hp <= 0).length;
+      const record = battleRecorder.finalize('fled', turnNumber, {
+        xpEarned: 0,
+        goldEarned: 0,
+        itemsEarned: [],
+        levelBefore: 0,
+        levelAfter: 0,
+        unlocksEarned: [],
+      });
+      if (record) {
+        if (record.advancedCombat) record.advancedCombat.enemiesDefeated = defeatedCount;
+        set({ lastBattleRecord: record });
+        getBattleHistoryRepository().saveRecord(record).catch(() => {});
+      }
+    }
     set({ turnPhase: 'defeat' });
   },
 
-  castSpell: (spellId: string) => {
-    const { player, turnPhase, activeSpells, enemy, turnNumber, currentPrediction } = get();
-    if (turnPhase !== 'player_turn') return;
+  castSpell: (spellId: string, options?: { charge?: boolean; viaVoice?: boolean }) => {
+    const {
+      player,
+      turnPhase,
+      activeSpells,
+      enemies,
+      selectedTargetId,
+      turnNumber,
+      chargingMode,
+      chargedSpell,
+      perfectDodgeBuff,
+      recentDamageTaken,
+      equipBonuses,
+      battleRecorder,
+      activeEncounter,
+    } = get();
+
+    if (turnPhase !== 'player_turn') {
+      return { success: false, reason: 'Not your turn.' };
+    }
 
     const spell = activeSpells.find((s) => s.id === spellId);
-    // Reject cast if invalid or insufficient resources (does NOT record in memory!)
-    if (!spell || player.mana < spell.manaCost || spell.currentCooldown > 0) return;
+    if (!spell) {
+      return { success: false, reason: `Spell "${spellId}" is not prepared.` };
+    }
 
-    // Deduct mana, apply cooldown
+    if (spell.currentCooldown > 0) {
+      const msg = `${spell.name} is on cooldown (${spell.currentCooldown} turns left).`;
+      get().addLog(`⏳ ${msg}`, 'system');
+      return { success: false, reason: msg };
+    }
+
+    const releasingCharged = chargedSpell !== null && chargedSpell.spellId === spellId;
+    const wantsCharge = !releasingCharged && Boolean(options?.charge ?? chargingMode);
+
+    if (wantsCharge) {
+      const chargeCheck = ChargingSystem.canStartCharge(
+        spell,
+        player.mana,
+        equipBonuses.chargeCostReduction ?? 0
+      );
+      if (!chargeCheck.valid) {
+        get().addLog(`⚠️ ${chargeCheck.reason}`, 'system');
+        return { success: false, reason: chargeCheck.reason };
+      }
+
+      set({
+        turnPhase: 'player_casting',
+        chargingMode: false,
+        player: { ...player, mana: player.mana - chargeCheck.totalCost },
+        chargedSpell: {
+          spellId: spell.id,
+          spellName: spell.name,
+          targetId: selectedTargetId,
+          bonusManaPaid: chargeCheck.totalCost - spell.manaCost,
+          turnsRemaining: 1,
+        },
+      });
+
+      enemies.forEach((inst) => {
+        if (inst.entity.hp > 0) inst.memory.recordChargedCast();
+      });
+      if (battleRecorder) {
+        battleRecorder.setTurn(turnNumber);
+        battleRecorder.recordChargedSpell(spell.name);
+        if (options?.viaVoice) battleRecorder.recordVoiceAttempt(true, spell.name);
+      }
+
+      soundEngine.playSpellCast(spell.castAnimation);
+      gameEvents.emit('ENTITY_ANIMATION', { entityId: 'player', state: 'cast' });
+      get().addLog(
+        `🔮 Charging ${spell.name}! (${chargeCheck.totalCost} MP — Keep your shield up until next turn!)`,
+        'player'
+      );
+
+      setTimeout(() => {
+        get().triggerEnemyAction();
+      }, 650);
+
+      return { success: true };
+    }
+
+    const manaNeeded = releasingCharged ? 0 : spell.manaCost;
+    if (player.mana < manaNeeded) {
+      const msg = `Not enough mana to cast ${spell.name}.`;
+      get().addLog(`⚠️ ${msg}`, 'system');
+      return { success: false, reason: msg };
+    }
+
+    const playerLane: Lane = player.lane ?? 'center';
+    const overrideRule = releasingCharged ? spell.chargeTargetRule : undefined;
+    const targetRes = resolveSpellTargets(
+      spell,
+      playerLane,
+      enemies.map((e) => e.entity),
+      selectedTargetId,
+      overrideRule
+    );
+
+    if (!targetRes.valid) {
+      get().addLog(`🎯 ${targetRes.reason}`, 'system');
+      return { success: false, reason: targetRes.reason };
+    }
+
     const updatedSpells = activeSpells.map((s) =>
       s.id === spellId ? { ...s, currentCooldown: s.cooldownTurns } : s
     );
 
     set({
       turnPhase: 'player_casting',
-      player: { ...player, mana: player.mana - spell.manaCost },
+      player: { ...player, mana: player.mana - manaNeeded },
       activeSpells: updatedSpells,
+      chargedSpell: releasingCharged ? null : chargedSpell,
+      perfectDodgeBuff: false,
     });
 
-    // Sound effect and voice
+    if (battleRecorder) {
+      battleRecorder.setTurn(turnNumber);
+      battleRecorder.recordPlayerSpellCast(
+        spell.id,
+        spell.name,
+        spell.element,
+        manaNeeded,
+        spell.isOffensive
+      );
+      if (options?.viaVoice) battleRecorder.recordVoiceAttempt(true, spell.name);
+    }
+
     soundEngine.playSpellCast(spell.castAnimation);
     soundEngine.playWizardVoice('player');
-
-    // Visual feedback
     gameEvents.emit('ENTITY_ANIMATION', { entityId: 'player', state: 'cast' });
 
-    // Handle Defensive Actions
     if (!spell.isOffensive || spell.element === 'defense') {
-      memoryInstance.recordDefensiveAction(turnNumber);
-
-      // Record defensive cast in battle recorder
-      const recorder = get().battleRecorder;
-      if (recorder) {
-        recorder.setTurn(turnNumber);
-        recorder.recordPlayerSpellCast(spell.id, spell.name, spell.element, spell.manaCost, false);
-      }
+      enemies.forEach((inst) => {
+        if (inst.entity.hp > 0) {
+          inst.memory.recordDefensiveAction(turnNumber);
+          if (player.hp / player.maxHp <= 0.35) inst.memory.recordLowHpHeal();
+        }
+      });
 
       setTimeout(() => {
-        const shieldVal = spell.effects.find((e) => e.type === 'shield')?.value || 35;
-        set((state) => ({
-          player: { ...state.player, shield: state.player.shield + shieldVal },
-          predictabilityScore: predictabilityInstance.calculatePredictabilityScore(memoryInstance),
-          predictabilityStage: predictabilityInstance.getStage(memoryInstance),
-        }));
+        const healMult = equipBonuses.healingBonusMultiplier ?? 1.0;
+        let currentP = get().player;
 
-        gameEvents.emit('SPAWN_COMBAT_TEXT', {
-          id: `txt-${Date.now()}`,
-          x: 270,
-          y: 280,
-          text: `SHIELD +${shieldVal}`,
-          color: '#60a5fa',
+        spell.effects.forEach((eff) => {
+          if (eff.type === 'shield') {
+            currentP = { ...currentP, shield: currentP.shield + eff.value };
+            gameEvents.emit('SPAWN_COMBAT_TEXT', {
+              id: `txt-${Date.now()}`,
+              x: 270,
+              y: 280,
+              text: `SHIELD +${eff.value}`,
+              color: '#60a5fa',
+            });
+            get().addLog(`🛡️ Cast ${spell.name}! Absorbing ${eff.value} damage.`, 'player');
+          } else if (eff.type === 'heal' || eff.type === 'reversal_heal') {
+            const rawHeal =
+              eff.type === 'reversal_heal'
+                ? HealingSystem.calculateReversalHeal(recentDamageTaken, eff.value / 100)
+                : eff.value;
+            const res = HealingSystem.applyHealing(currentP, rawHeal, healMult);
+            currentP = { ...currentP, hp: res.newHp };
+            if (battleRecorder) {
+              battleRecorder.recordHealing(res.actualHealed, false);
+              if (res.wastedHealing > 0) battleRecorder.recordWastedHealing(res.wastedHealing);
+            }
+            gameEvents.emit('SPAWN_COMBAT_TEXT', {
+              id: `heal-${Date.now()}`,
+              x: 270,
+              y: 275,
+              text: `+${res.actualHealed} HP`,
+              color: '#34d399',
+            });
+            get().addLog(`💚 ${spell.name} restored ${res.actualHealed} HP!`, 'player');
+          }
         });
-        get().addLog(`✨ The Petty Sorcerer conjured ${spell.name}! Absorbing ${shieldVal} damage.`, 'player');
+
+        currentP = PostureSystem.recoverPosture(currentP, 15);
+        set({ player: currentP });
 
         setTimeout(() => {
           get().triggerEnemyAction();
-        }, 800);
+        }, 700);
       }, 400);
-      return;
+      return { success: true };
     }
 
-    // Offensive Spell Execution
     const offensiveEl = isOffensiveElement(spell.element) ? spell.element : 'arcane';
-    const prevConsecutiveCount = memoryInstance.getConsecutiveElementCount();
-    const prevConsecutiveEl = memoryInstance.getConsecutiveElement();
+    const chargeMult = releasingCharged ? (spell.chargeDamageMultiplier ?? 1.5) : 1.0;
+    const dodgeMult = perfectDodgeBuff ? 1.25 : 1.0;
+    const totalSpellMult = chargeMult * dodgeMult;
 
-    // 1. Evaluate Prediction Outcome
-    let predictionWasCorrect = false;
-    if (currentPrediction) {
-      predictionWasCorrect = currentPrediction.predictedElement === offensiveEl;
-      memoryInstance.resolveLatestPrediction(offensiveEl);
-
-      if (predictionWasCorrect) {
-        emotionInstance.evaluateEvent({ type: 'enemy_correct_prediction' }, enemy, player, memoryInstance);
-        const banter = getContextualLine('correct_prediction');
-        set({ contextualRivalBanter: banter });
-        get().addLog(`🧠 Malakor correctly anticipated your ${offensiveEl.toUpperCase()}! "${banter}"`, 'enemy');
-      } else {
-        emotionInstance.evaluateEvent({ type: 'enemy_wrong_prediction' }, enemy, player, memoryInstance);
-        const banter = getContextualLine('incorrect_prediction');
-        set({ contextualRivalBanter: banter });
-      }
-    }
-
-    // 2. Check Strategy Change vs Repetition
-    if (prevConsecutiveCount >= 3 && prevConsecutiveEl !== offensiveEl) {
-      // Player broke pattern
-      emotionInstance.evaluateEvent({ type: 'player_change_strategy' }, enemy, player, memoryInstance);
-      const banter = getContextualLine('player_change_strategy');
-      set({ contextualRivalBanter: banter });
-      get().addLog(`🔄 Strategy Shift! "${banter}"`, 'player');
-    } else if (prevConsecutiveEl === offensiveEl) {
-      // Player repeated element
-      emotionInstance.evaluateEvent({ type: 'player_repeat_spell' }, enemy, player, memoryInstance);
-      if (prevConsecutiveCount >= 2) {
-        const banter = getContextualLine('repeated_spell');
-        set({ contextualRivalBanter: banter });
-      }
-    }
-
-    // 3. Record Offensive Cast in Enemy Memory
-    memoryInstance.recordOffensiveAction(spell.id, offensiveEl, turnNumber);
-
-    // 4. Calculate Adaptation Resistance
-    const currentResistance = adaptationInstance.calculateResistance(offensiveEl, memoryInstance);
-
-    // 5. Evaluate Anti-Repetition Punishments
-    const punishment = predictabilityInstance.evaluatePunishment(offensiveEl, memoryInstance, currentResistance);
-
-    // Update live predictability & resistance states
-    const updatedResistances = adaptationInstance.getAllResistances(memoryInstance);
-    const score = predictabilityInstance.calculatePredictabilityScore(memoryInstance);
-    const stage = predictabilityInstance.getStage(memoryInstance);
-    const emotionState = emotionInstance.getState();
-
-    set({
-      elementResistances: updatedResistances,
-      predictabilityScore: score,
-      predictabilityStage: stage,
-      currentEnemyEmotion: emotionState.currentEmotion,
-      currentEmotionReason: emotionState.reason,
-      lastPunishmentDescription: punishment.triggered ? punishment.reason : null,
-    });
-
-    gameEvents.emit('ENEMY_EMOTION_CHANGED', {
-      emotion: emotionState.currentEmotion,
-      reason: emotionState.reason,
-    });
-
-    // 6. Fire Projectile
     const projectileColors: Record<OffensiveElement, number> = {
       fire: 0xef4444,
       ice: 0x38bdf8,
@@ -377,342 +639,699 @@ export const useCombatStore = create<CombatState>((set, get) => ({
       poison: 0x10b981,
     };
 
+    const primaryTarget = targetRes.targets[0];
+    const pStartCoords = LANE_COORDS[playerLane];
+    const eTargetCoords = LANE_COORDS[primaryTarget?.lane ?? 'center'];
+
     gameEvents.emit('PROJECTILE_FIRED', {
       id: `proj-${Date.now()}`,
       type: spell.projectileType || 'arcane_bolt',
-      startX: 290,
-      startY: 330,
-      targetX: 670,
-      targetY: 330,
+      startX: pStartCoords.playerX + 30,
+      startY: pStartCoords.playerY - 30,
+      targetX: eTargetCoords.enemyX - 20,
+      targetY: eTargetCoords.enemyY - 30,
       speed: 12,
       color: projectileColors[offensiveEl] || 0xa855f7,
       onHit: () => {
-        let currentEnemy = get().enemy;
-        let isCrit = false;
+        const currentEnemies = [...get().enemies];
+        let totalActualDamageForLifesteal = 0;
+        let currentPlayer = get().player;
+        const postureMult = equipBonuses.postureDamageMultiplier ?? 1.0;
+        const healMult = equipBonuses.healingBonusMultiplier ?? 1.0;
 
-        // Apply punishment effects if triggered
-        if (punishment.triggered) {
-          if (punishment.shieldBonus) {
-            currentEnemy = {
-              ...currentEnemy,
-              shield: currentEnemy.shield + punishment.shieldBonus,
-            };
-            set({ enemy: currentEnemy });
-            gameEvents.emit('SPAWN_COMBAT_TEXT', {
-              id: `punish-shield-${Date.now()}`,
-              x: 690,
-              y: 290,
-              text: `PUNISH WARD +${punishment.shieldBonus}`,
-              color: '#60a5fa',
-              size: 14,
-            });
-          }
+        targetRes.targets.forEach((tgt) => {
+          const idx = currentEnemies.findIndex((e) => e.entity.id === tgt.id);
+          if (idx < 0) return;
 
-          if (punishment.counterDamage) {
-            // Immediate counter retaliatory strike
-            const counterHp = Math.max(0, get().player.hp - punishment.counterDamage);
-            set((state) => ({ player: { ...state.player, hp: counterHp } }));
-            soundEngine.playHit(false);
-            gameEvents.emit('SCREEN_SHAKE', { intensity: 9, durationMs: 200 });
-            gameEvents.emit('SPAWN_COMBAT_TEXT', {
-              id: `counter-hit-${Date.now()}`,
-              x: 270,
-              y: 280,
-              text: `COUNTER -${punishment.counterDamage}`,
-              color: '#f87171',
-              size: 15,
-            });
-            get().addLog(`⚡ ${punishment.reason}`, 'enemy');
-          } else {
-            get().addLog(`🛡️ ${punishment.reason}`, 'enemy');
-          }
-        }
+          const inst = currentEnemies[idx];
+          const prevConsecutiveCount = inst.memory.getConsecutiveElementCount();
+          const prevConsecutiveEl = inst.memory.getConsecutiveElement();
 
-        // Calculate and apply spell damage
-        spell.effects.forEach((eff) => {
-          if (eff.type === 'damage') {
-            const deflection = punishment.deflectionPercent || 0;
-            const calc = calculateSpellDamage(
-              get().player,
-              currentEnemy,
-              eff.value,
-              currentResistance,
-              deflection
-            );
-            isCrit = calc.isCritical;
-
-            // Damage enemy
-            const newEnemyHp = Math.max(0, currentEnemy.hp - calc.finalDamage);
-            set({
-              enemy: {
-                ...currentEnemy,
-                hp: newEnemyHp,
-                shield: calc.remainingShield,
-              },
-            });
-
-            // Camera shake & hit sound
-            soundEngine.playHit(isCrit);
-            gameEvents.emit('SCREEN_SHAKE', { intensity: isCrit ? 12 : 7, durationMs: 250 });
-            gameEvents.emit('ENTITY_ANIMATION', { entityId: 'enemy', state: 'hurt' });
-
-            // Floating combat text
-            gameEvents.emit('SPAWN_COMBAT_TEXT', {
-              id: `txt-${Date.now()}`,
-              x: 690,
-              y: 260,
-              text: calc.absorbedByShield > 0 && calc.finalDamage === 0
-                ? 'BLOCKED!'
-                : `${isCrit ? 'CRITICAL! ' : ''}-${calc.finalDamage}`,
-              color: isCrit ? '#facc15' : '#ef4444',
-              size: isCrit ? 20 : 16,
-            });
-
-            // Log damage and resistance feedback
-            if (calc.resistedAmount > 0) {
-              get().addLog(
-                `⚡ ${spell.name} dealt ${calc.finalDamage} ${offensiveEl.toUpperCase()} damage (Malakor resisted ${calc.resistedAmount} [${calc.resistancePercent}% resistance]!)`,
-                'player'
+          if (inst.currentPrediction) {
+            const wasCorrect = inst.currentPrediction.predictedElement === offensiveEl;
+            inst.memory.resolveLatestPrediction(offensiveEl);
+            if (idx === 0 && battleRecorder) {
+              battleRecorder.recordPredictionOutcome(wasCorrect, offensiveEl);
+            }
+            if (wasCorrect) {
+              inst.emotionSystem.evaluateEvent(
+                { type: 'enemy_correct_prediction' },
+                inst.entity,
+                currentPlayer,
+                inst.memory
               );
+              if (inst.entity.id === get().selectedTargetId) {
+                const banter = getContextualLine('correct_prediction');
+                set({ contextualRivalBanter: banter });
+              }
             } else {
-              get().addLog(
-                `⚡ ${spell.name} blasted Arch-Mage Malakor for ${calc.finalDamage} damage! ${isCrit ? '(CRITICAL HIT)' : ''}`,
-                'player'
+              inst.emotionSystem.evaluateEvent(
+                { type: 'enemy_wrong_prediction' },
+                inst.entity,
+                currentPlayer,
+                inst.memory
               );
             }
+          }
 
-            // Check emotional reaction to damage
-            emotionInstance.evaluateEvent({
-              type: 'enemy_substantial_damage',
-              damageTaken: calc.finalDamage,
-              isCritical: isCrit,
-            }, get().enemy, get().player, memoryInstance);
+          if (prevConsecutiveCount >= 3 && prevConsecutiveEl !== offensiveEl) {
+            inst.emotionSystem.evaluateEvent(
+              { type: 'player_change_strategy' },
+              inst.entity,
+              currentPlayer,
+              inst.memory
+            );
+            if (idx === 0 && battleRecorder) battleRecorder.recordStrategyChange();
+          } else if (prevConsecutiveEl === offensiveEl) {
+            inst.emotionSystem.evaluateEvent(
+              { type: 'player_repeat_spell' },
+              inst.entity,
+              currentPlayer,
+              inst.memory
+            );
+          }
 
-            const postHitEmotion = emotionInstance.getState();
-            set({
-              currentEnemyEmotion: postHitEmotion.currentEmotion,
-              currentEmotionReason: postHitEmotion.reason,
-            });
-            gameEvents.emit('ENEMY_EMOTION_CHANGED', {
-              emotion: postHitEmotion.currentEmotion,
-              reason: postHitEmotion.reason,
-            });
-          } else if (eff.type === 'mana_restore') {
-            const newMana = Math.min(get().player.maxMana, get().player.mana + eff.value);
-            set((state) => ({ player: { ...state.player, mana: newMana } }));
+          inst.memory.recordOffensiveAction(spell.id, offensiveEl, turnNumber);
+
+          const resistance = inst.adaptation.calculateResistance(offensiveEl, inst.memory);
+          const punishment = inst.predictability.evaluatePunishment(
+            offensiveEl,
+            inst.memory,
+            resistance
+          );
+
+          inst.elementResistances = inst.adaptation.getAllResistances(inst.memory);
+          inst.predictabilityScore = inst.predictability.calculatePredictabilityScore(inst.memory);
+          inst.predictabilityStage = inst.predictability.getStage(inst.memory);
+          inst.lastPunishmentDescription = punishment.triggered ? punishment.reason : null;
+
+          if (idx === 0 && battleRecorder) {
+            battleRecorder.recordResistanceUpdate(inst.elementResistances);
+            if (punishment.triggered) battleRecorder.recordPunishment(punishment.reason);
+          }
+
+          if (punishment.triggered) {
+            if (punishment.shieldBonus) {
+              inst.entity = {
+                ...inst.entity,
+                shield: inst.entity.shield + punishment.shieldBonus,
+              };
+            }
+            if (punishment.counterDamage) {
+              currentPlayer = {
+                ...currentPlayer,
+                hp: Math.max(0, currentPlayer.hp - punishment.counterDamage),
+              };
+              if (battleRecorder) {
+                battleRecorder.recordDamageReceived(punishment.counterDamage, false, false);
+              }
+              get().addLog(`⚡ ${punishment.reason}`, 'enemy');
+            } else {
+              get().addLog(`🛡️ ${punishment.reason}`, 'enemy');
+            }
+          }
+
+          const synergy = ChargingSystem.evaluateSynergy(offensiveEl, inst.entity);
+          if (synergy.triggered) {
+            get().addLog(`✨ ${synergy.name}: ${synergy.description}`, 'critical');
+          }
+
+          spell.effects.forEach((eff) => {
+            if (eff.type === 'damage') {
+              const scaledBase = Math.round(eff.value * totalSpellMult * synergy.bonusMultiplier);
+              const calc = calculateSpellDamage(
+                currentPlayer,
+                inst.entity,
+                scaledBase,
+                resistance,
+                punishment.deflectionPercent || 0
+              );
+
+              const newHp = Math.max(0, inst.entity.hp - calc.finalDamage);
+              totalActualDamageForLifesteal += calc.finalDamage;
+
+              inst.entity = {
+                ...inst.entity,
+                hp: newHp,
+                shield: calc.remainingShield,
+              };
+
+              const postureAmt = (spell.postureDamage ?? 10) * (releasingCharged ? 1.5 : 1.0);
+              const postRes = PostureSystem.applyPostureDamage(inst.entity, postureAmt, postureMult);
+              inst.entity = postRes.updatedEntity;
+
+              if (battleRecorder) {
+                battleRecorder.recordDamageDealt(calc.finalDamage, calc.isCritical, offensiveEl);
+                battleRecorder.recordPostureAndStagger(
+                  postRes.postureDamageDealt,
+                  postRes.triggeredStagger,
+                  inst.entity.name
+                );
+              }
+
+              if (postRes.triggeredStagger) {
+                get().addLog(`💫 ${inst.entity.name} is STAGGERED!`, 'critical');
+              }
+
+              const hitCoords = LANE_COORDS[inst.entity.lane ?? 'center'];
+              soundEngine.playHit(calc.isCritical);
+              gameEvents.emit('SCREEN_SHAKE', { intensity: calc.isCritical ? 12 : 7, durationMs: 250 });
+              gameEvents.emit('ENTITY_ANIMATION', { entityId: inst.entity.id, state: 'hurt' });
+              gameEvents.emit('SPAWN_COMBAT_TEXT', {
+                id: `txt-${Date.now()}-${inst.entity.id}`,
+                x: hitCoords.enemyX,
+                y: hitCoords.enemyY - 95,
+                text: `${releasingCharged ? 'CHARGED! ' : ''}${calc.isCritical ? 'CRIT! ' : ''}-${calc.finalDamage}`,
+                color: calc.isCritical ? '#facc15' : '#ef4444',
+                size: calc.isCritical || releasingCharged ? 19 : 16,
+              });
+
+              get().addLog(
+                `⚡ ${spell.name} hit ${inst.entity.name} for ${calc.finalDamage} ${offensiveEl.toUpperCase()} DMG${calc.resistedAmount > 0 ? ` (${calc.resistancePercent}% resisted)` : ''}!`,
+                'player'
+              );
+
+              const stageRes = BossPhaseManager.evaluateStageTransition(inst.entity);
+              if (stageRes.transitioned && stageRes.config) {
+                inst.entity = stageRes.updatedEntity;
+                if (battleRecorder) {
+                  battleRecorder.recordBossStageTransition(inst.entity.name, stageRes.newStage);
+                }
+                set({ contextualRivalBanter: stageRes.config.transitionDialogue });
+                get().addLog(
+                  `🔥 ${inst.entity.name} entered ${stageRes.config.title}!`,
+                  'critical'
+                );
+              }
+
+              if (newHp <= 0) {
+                inst.emotionSystem.evaluateEvent({ type: 'enemy_defeated' }, inst.entity, currentPlayer, inst.memory);
+                if (battleRecorder) battleRecorder.recordEnemyDefeated(inst.entity.name);
+                get().addLog(`💀 ${inst.entity.name} was defeated!`, 'critical');
+              } else {
+                inst.emotionSystem.evaluateEvent(
+                  { type: 'enemy_substantial_damage', damageTaken: calc.finalDamage, isCritical: calc.isCritical },
+                  inst.entity,
+                  currentPlayer,
+                  inst.memory
+                );
+              }
+
+              const em = inst.emotionSystem.getState();
+              inst.currentEmotion = em.currentEmotion;
+              inst.currentEmotionReason = em.reason;
+              gameEvents.emit('ENEMY_EMOTION_CHANGED', {
+                entityId: inst.entity.id,
+                emotion: em.currentEmotion,
+                reason: em.reason,
+              });
+            } else if (eff.type === 'status' && eff.statusType && inst.entity.hp > 0) {
+              const statusEff = {
+                id: `st-${eff.statusType}-${Date.now()}`,
+                type: eff.statusType,
+                name: eff.statusType.toUpperCase(),
+                turnsRemaining: eff.durationTurns ?? 2,
+                value: eff.value,
+              };
+              inst.entity = {
+                ...inst.entity,
+                statusEffects: [...inst.entity.statusEffects, statusEff],
+              };
+              if (battleRecorder) battleRecorder.recordStatusEffect(statusEff.name, 'enemy');
+            }
+          });
+        });
+
+        spell.effects.forEach((eff) => {
+          if (eff.type === 'mana_restore') {
+            currentPlayer = {
+              ...currentPlayer,
+              mana: Math.min(currentPlayer.maxMana, currentPlayer.mana + eff.value),
+            };
           } else if (eff.type === 'heal') {
-            const newHp = Math.min(get().player.maxHp, get().player.hp + eff.value);
-            set((state) => ({ player: { ...state.player, hp: newHp } }));
-            gameEvents.emit('SPAWN_COMBAT_TEXT', {
-              id: `heal-${Date.now()}`,
-              x: 270,
-              y: 280,
-              text: `+${eff.value} HP`,
-              color: '#34d399',
-            });
+            const res = HealingSystem.applyHealing(currentPlayer, eff.value, healMult);
+            currentPlayer = { ...currentPlayer, hp: res.newHp };
+            if (battleRecorder) battleRecorder.recordHealing(res.actualHealed, false);
           }
         });
 
-        // Check if enemy defeated
-        if (get().enemy.hp <= 0) {
-          emotionInstance.evaluateEvent({ type: 'enemy_defeated' }, get().enemy, get().player, memoryInstance);
-          const topElement = memoryInstance.getMostFrequentElement().element;
-          BossPersistenceManager.recordEncounterOutcome('malakor', true, topElement);
+        if (spell.lifestealRatio && totalActualDamageForLifesteal > 0) {
+          const stealRes = HealingSystem.applyLifesteal(
+            currentPlayer,
+            totalActualDamageForLifesteal,
+            spell.lifestealRatio,
+            healMult
+          );
+          currentPlayer = { ...currentPlayer, hp: stealRes.newHp };
+          if (battleRecorder && stealRes.actualHealed > 0) {
+            battleRecorder.recordHealing(stealRes.actualHealed, true);
+          }
+          if (stealRes.actualHealed > 0) {
+            gameEvents.emit('SPAWN_COMBAT_TEXT', {
+              id: `lifesteal-${Date.now()}`,
+              x: 270,
+              y: 270,
+              text: `+${stealRes.actualHealed} LIFESTEAL`,
+              color: '#34d399',
+            });
+          }
+        }
+
+        const synced = syncPrimaryEnemyFields(currentEnemies, get().selectedTargetId);
+        set({
+          player: currentPlayer,
+          enemies: currentEnemies,
+          ...synced,
+        });
+
+        const allDead = currentEnemies.every((e) => e.entity.hp <= 0);
+        if (allDead) {
+          currentEnemies.forEach((inst) => {
+            if (inst.entity.isBoss && inst.entity.bossId) {
+              const topEl = inst.memory.getMostFrequentElement().element;
+              BossPersistenceManager.recordEncounterOutcome(inst.entity.bossId, true, topEl);
+            }
+          });
+
+          if (battleRecorder && !battleRecorder.isFinalized()) {
+            const record = battleRecorder.finalize('victory', turnNumber, {
+              xpEarned: activeEncounter.rewards.xp,
+              goldEarned: activeEncounter.rewards.gold,
+              itemsEarned: [],
+              levelBefore: 0,
+              levelAfter: 0,
+              unlocksEarned: [],
+            });
+            if (record) {
+              set({ lastBattleRecord: record });
+              getBattleHistoryRepository().saveRecord(record).catch(() => {});
+            }
+          }
 
           setTimeout(() => {
-            set({
-              turnPhase: 'victory',
-              currentEnemyEmotion: 'defeated',
-            });
+            set({ turnPhase: 'victory', currentEnemyEmotion: 'defeated' });
             soundEngine.playVictoryFanfare();
             gameEvents.emit('ENTITY_ANIMATION', { entityId: 'enemy', state: 'defeat' });
             gameEvents.emit('ENTITY_ANIMATION', { entityId: 'player', state: 'victory' });
             gameEvents.emit('ENEMY_EMOTION_CHANGED', {
               emotion: 'defeated',
-              reason: 'Humiliated and bested by minor arcana!',
+              reason: 'All foes defeated!',
             });
-            get().addLog('🏆 VICTORY! Arch-Mage Malakor has been humiliated and routed!', 'critical');
+            get().addLog(`🏆 VICTORY! ${activeEncounter.name} has been vanquished!`, 'critical');
           }, 400);
           return;
         }
 
-        // Pass to enemy turn
         setTimeout(() => {
           get().triggerEnemyAction();
         }, 700);
       },
     });
+
+    if (primaryTarget) {
+      gameEvents.emit('SPELL_CAST_EFFECT', {
+        spellId: spell.id,
+        source: 'player',
+        target: 'enemy',
+      });
+    }
+
+    return { success: true };
   },
 
   triggerEnemyAction: () => {
-    const { enemy, enemyIntent } = get();
     if (get().turnPhase === 'victory' || get().turnPhase === 'defeat') return;
 
     set({ turnPhase: 'enemy_turn' });
-    const actionKey = enemyIntent ? enemyIntent.spellId : 'void_bolt';
-    const action = ENEMY_SPELLS[actionKey] || ENEMY_SPELLS.void_bolt;
 
     setTimeout(() => {
       set({ turnPhase: 'enemy_casting' });
-      soundEngine.playSpellCast(action.castAnimation);
-      soundEngine.playWizardVoice('enemy');
-      gameEvents.emit('ENTITY_ANIMATION', { entityId: 'enemy', state: 'cast' });
 
-      // If it's a defensive shield
-      if (action.type === 'defense') {
-        const shieldVal = action.shieldValue || 30;
-        set((state) => ({
-          enemy: { ...state.enemy, shield: state.enemy.shield + shieldVal },
-        }));
-        gameEvents.emit('SPAWN_COMBAT_TEXT', {
-          id: `txt-${Date.now()}`,
-          x: 690,
-          y: 280,
-          text: `SHIELD +${shieldVal}`,
-          color: '#34d399',
+      const currentEnemies = [...get().enemies];
+      let currentPlayer = get().player;
+      const {
+        activeDodge,
+        consecutiveDodges,
+        chargedSpell,
+        equipBonuses,
+        battleRecorder,
+        turnNumber,
+      } = get();
+
+      let dodgeResolvedThisTurn = false;
+      let totalDamageToPlayerThisTurn = 0;
+
+      for (let i = 0; i < currentEnemies.length; i++) {
+        const inst = currentEnemies[i];
+        if (inst.entity.hp <= 0) continue;
+
+        if (inst.entity.isStaggered) {
+          inst.entity = PostureSystem.clearStagger(inst.entity);
+          get().addLog(`💫 ${inst.entity.name} is staggered and loses their action!`, 'system');
+          continue;
+        }
+
+        const intent = inst.currentIntent;
+        const actionKey = intent ? intent.spellId : 'void_bolt';
+        const action = ENEMY_SPELLS[actionKey] || ENEMY_SPELLS.void_bolt;
+
+        soundEngine.playSpellCast(action.castAnimation);
+        soundEngine.playWizardVoice('enemy');
+        gameEvents.emit('ENTITY_ANIMATION', { entityId: inst.entity.id, state: 'cast' });
+
+        if (battleRecorder) battleRecorder.recordEnemySpellCast(`${inst.entity.name}: ${action.name}`);
+
+        const enemyLaneCoords = LANE_COORDS[inst.entity.lane ?? 'center'];
+
+        if (action.type === 'defense' || action.type === 'support') {
+          if (action.spellId === 'ally_mend' && intent?.targetEnemyId) {
+            const allyIdx = currentEnemies.findIndex((e) => e.entity.id === intent.targetEnemyId);
+            if (allyIdx >= 0 && currentEnemies[allyIdx].entity.hp > 0) {
+              const ally = currentEnemies[allyIdx];
+              const healVal = action.healValue || 24;
+              ally.entity = {
+                ...ally.entity,
+                hp: Math.min(ally.entity.maxHp, ally.entity.hp + healVal),
+              };
+              const allyCoords = LANE_COORDS[ally.entity.lane ?? 'center'];
+              gameEvents.emit('SPAWN_COMBAT_TEXT', {
+                id: `eheal-${Date.now()}-${i}`,
+                x: allyCoords.enemyX,
+                y: allyCoords.enemyY - 95,
+                text: `+${healVal} HP`,
+                color: '#34d399',
+              });
+              get().addLog(`💚 ${inst.entity.name} mended ${ally.entity.name} for +${healVal} HP!`, 'enemy');
+              continue;
+            }
+          }
+
+          const shieldVal = action.shieldValue || 25;
+          if (action.spellId === 'ally_ward' && intent?.targetEnemyId) {
+            const allyIdx = currentEnemies.findIndex((e) => e.entity.id === intent.targetEnemyId);
+            if (allyIdx >= 0 && currentEnemies[allyIdx].entity.hp > 0) {
+              currentEnemies[allyIdx].entity = {
+                ...currentEnemies[allyIdx].entity,
+                shield: currentEnemies[allyIdx].entity.shield + shieldVal,
+              };
+              const allyCoords = LANE_COORDS[currentEnemies[allyIdx].entity.lane ?? 'center'];
+              gameEvents.emit('SPAWN_COMBAT_TEXT', {
+                id: `eward-${Date.now()}-${i}`,
+                x: allyCoords.enemyX,
+                y: allyCoords.enemyY - 95,
+                text: `SHIELD +${shieldVal}`,
+                color: '#10b981',
+              });
+              get().addLog(
+                `🛡️ ${inst.entity.name} shielded ${currentEnemies[allyIdx].entity.name} (+${shieldVal})!`,
+                'enemy'
+              );
+              continue;
+            }
+          }
+
+          inst.entity = { ...inst.entity, shield: inst.entity.shield + shieldVal };
+          gameEvents.emit('SPAWN_COMBAT_TEXT', {
+            id: `eshield-${Date.now()}-${i}`,
+            x: enemyLaneCoords.enemyX,
+            y: enemyLaneCoords.enemyY - 95,
+            text: `SHIELD +${shieldVal}`,
+            color: '#10b981',
+          });
+          get().addLog(`🛡️ ${inst.entity.name} wove ${action.name} (+${shieldVal} Shield).`, 'enemy');
+          continue;
+        }
+
+        const playerLane: Lane = currentPlayer.lane ?? 'center';
+        const playerLaneCoords = LANE_COORDS[playerLane];
+
+        const enemyProjColor =
+          action.spellId === 'frost_lance'
+            ? 0x38bdf8
+            : action.castAnimation === 'fire'
+            ? 0xef4444
+            : action.castAnimation === 'hex'
+            ? 0x10b981
+            : action.castAnimation === 'drain'
+            ? 0xf43f5e
+            : 0x9333ea;
+
+        const enemyProjType =
+          action.spellId === 'frost_lance'
+            ? 'ice_shard'
+            : action.castAnimation === 'fire'
+            ? 'fire_orb'
+            : action.castAnimation === 'hex'
+            ? 'hex_beam'
+            : action.castAnimation === 'spark'
+            ? 'spark'
+            : 'void_skull';
+
+        gameEvents.emit('PROJECTILE_FIRED', {
+          id: `eproj-${Date.now()}-${i}`,
+          type: enemyProjType,
+          startX: enemyLaneCoords.enemyX - 25,
+          startY: enemyLaneCoords.enemyY - 28,
+          targetX: playerLaneCoords.playerX + 25,
+          targetY: playerLaneCoords.playerY - 28,
+          speed: 11,
+          color: enemyProjColor,
         });
-        get().addLog(`🛡️ Malakor wove ${action.name}! Shielding for ${shieldVal} points.`, 'enemy');
+        const calc = calculateSpellDamage(inst.entity, currentPlayer, action.baseDamage);
+
+        const dodgeRes = DodgeSystem.resolveIncomingAttack(
+          activeDodge,
+          playerLane,
+          intent?.telegraph,
+          calc.finalDamage + calc.absorbedByShield,
+          consecutiveDodges,
+          equipBonuses.dodgeEfficiencyBonus ?? 0
+        );
+
+        if (activeDodge && !dodgeResolvedThisTurn) {
+          dodgeResolvedThisTurn = true;
+          if (battleRecorder) {
+            battleRecorder.recordDodgeResult(
+              dodgeRes.evaded,
+              dodgeRes.isPerfectDodge,
+              dodgeRes.damageAvoided,
+              dodgeRes.reason
+            );
+          }
+          if (dodgeRes.manaRecovered > 0) {
+            currentPlayer = {
+              ...currentPlayer,
+              mana: Math.min(currentPlayer.maxMana, currentPlayer.mana + dodgeRes.manaRecovered),
+            };
+          }
+          if (dodgeRes.grantsNextTurnBonus) {
+            set({ perfectDodgeBuff: true });
+          }
+        }
+
+        if (dodgeRes.evaded) {
+          gameEvents.emit('SPAWN_COMBAT_TEXT', {
+            id: `dodge-${Date.now()}-${i}`,
+            x: playerLaneCoords.playerX,
+            y: playerLaneCoords.playerY - 95,
+            text: dodgeRes.isPerfectDodge ? 'PERFECT DODGE!' : 'EVADED!',
+            color: dodgeRes.isPerfectDodge ? '#facc15' : '#38bdf8',
+            size: 16,
+          });
+          get().addLog(`💨 ${dodgeRes.reason}`, 'player');
+          continue;
+        }
+
+        const shieldBefore = currentPlayer.shield;
+        const postDodgeRaw = Math.round(action.baseDamage * dodgeRes.damageMultiplier);
+        const finalCalc = calculateSpellDamage(inst.entity, currentPlayer, postDodgeRaw);
+        const dmg = finalCalc.finalDamage;
+        totalDamageToPlayerThisTurn += dmg;
+
+        currentPlayer = {
+          ...currentPlayer,
+          hp: Math.max(0, currentPlayer.hp - dmg),
+          shield: finalCalc.remainingShield,
+        };
+
+        if (ChargingSystem.shouldInterruptCharge(chargedSpell, shieldBefore, dmg)) {
+          if (battleRecorder && chargedSpell) {
+            battleRecorder.recordSpellInterrupted(chargedSpell.spellName);
+          }
+          get().addLog(
+            `💥 ${inst.entity.name} INTERRUPTED your charged ${chargedSpell?.spellName}!`,
+            'critical'
+          );
+          set({ chargedSpell: null });
+        }
+
+        if (action.type === 'drain' && dmg > 0) {
+          const healAmt = Math.round(dmg * 0.5);
+          inst.entity = {
+            ...inst.entity,
+            hp: Math.min(inst.entity.maxHp, inst.entity.hp + healAmt),
+          };
+        }
+
+        soundEngine.playHit(finalCalc.isCritical);
+        gameEvents.emit('SCREEN_SHAKE', { intensity: finalCalc.isCritical ? 14 : 8, durationMs: 260 });
+        gameEvents.emit('ENTITY_ANIMATION', { entityId: 'player', state: 'hurt' });
+        gameEvents.emit('SPAWN_COMBAT_TEXT', {
+          id: `txt-${Date.now()}-${i}`,
+          x: playerLaneCoords.playerX,
+          y: playerLaneCoords.playerY - 90,
+          text: finalCalc.absorbedByShield > 0 && dmg === 0 ? 'BLOCKED!' : `-${dmg}`,
+          color: '#ef4444',
+        });
+
+        get().addLog(
+          `💥 ${inst.entity.name}'s ${action.name} dealt ${dmg} damage!`,
+          'enemy'
+        );
+
+        if (battleRecorder) {
+          const blocked = finalCalc.absorbedByShield > 0 && dmg === 0;
+          battleRecorder.recordDamageReceived(dmg, finalCalc.isCritical, blocked);
+        }
+
+        if (currentPlayer.hp <= 0) break;
+      }
+
+      const synced = syncPrimaryEnemyFields(currentEnemies, get().selectedTargetId);
+      set({
+        player: currentPlayer,
+        enemies: currentEnemies,
+        activeDodge: null,
+        recentDamageTaken: totalDamageToPlayerThisTurn,
+        ...synced,
+      });
+
+      if (currentPlayer.hp <= 0) {
+        currentEnemies.forEach((inst) => {
+          inst.emotionSystem.evaluateEvent({ type: 'player_defeated' }, inst.entity, currentPlayer, inst.memory);
+          if (inst.entity.isBoss && inst.entity.bossId) {
+            const topEl = inst.memory.getMostFrequentElement().element;
+            BossPersistenceManager.recordEncounterOutcome(inst.entity.bossId, false, topEl);
+          }
+        });
+
+        if (battleRecorder && !battleRecorder.isFinalized()) {
+          const defeatedCount = currentEnemies.filter((e) => e.entity.hp <= 0).length;
+          const record = battleRecorder.finalize('defeat', turnNumber, {
+            xpEarned: 0,
+            goldEarned: 0,
+            itemsEarned: [],
+            levelBefore: 0,
+            levelAfter: 0,
+            unlocksEarned: [],
+          });
+          if (record) {
+            if (record.advancedCombat) record.advancedCombat.enemiesDefeated = defeatedCount;
+            set({ lastBattleRecord: record });
+            getBattleHistoryRepository().saveRecord(record).catch(() => {});
+          }
+        }
 
         setTimeout(() => {
-          get().concludeTurn();
-        }, 700);
+          set({ turnPhase: 'defeat', currentEnemyEmotion: 'triumphant' });
+          gameEvents.emit('ENTITY_ANIMATION', { entityId: 'player', state: 'defeat' });
+          gameEvents.emit('ENTITY_ANIMATION', { entityId: 'enemy', state: 'victory' });
+          get().addLog('☠️ DEFEAT! The Petty Sorcerer was overwhelmed.', 'critical');
+        }, 400);
         return;
       }
 
-      // Fire projectile from enemy to player
-      gameEvents.emit('PROJECTILE_FIRED', {
-        id: `proj-${Date.now()}`,
-        type: action.projectileType,
-        startX: 650,
-        startY: 330,
-        targetX: 290,
-        targetY: 330,
-        speed: 12,
-        color: 0x10b981,
-        onHit: () => {
-          const currentPlayer = get().player;
-          const calc = calculateSpellDamage(enemy, currentPlayer, action.baseDamage);
-
-          const newPlayerHp = Math.max(0, currentPlayer.hp - calc.finalDamage);
-          set({
-            player: {
-              ...currentPlayer,
-              hp: newPlayerHp,
-              shield: calc.remainingShield,
-            },
-          });
-
-          // Camera shake and hit sound
-          soundEngine.playHit(calc.isCritical);
-          gameEvents.emit('SCREEN_SHAKE', { intensity: calc.isCritical ? 14 : 8, durationMs: 280 });
-          gameEvents.emit('ENTITY_ANIMATION', { entityId: 'player', state: 'hurt' });
-
-          // Combat text
-          gameEvents.emit('SPAWN_COMBAT_TEXT', {
-            id: `txt-${Date.now()}`,
-            x: 270,
-            y: 260,
-            text: calc.absorbedByShield > 0 && calc.finalDamage === 0
-              ? 'BLOCKED!'
-              : `-${calc.finalDamage}`,
-            color: '#ef4444',
-          });
-
-          get().addLog(
-            `💥 ${action.name} struck you for ${calc.finalDamage} damage! ${calc.isCritical ? '(CRITICAL)' : ''}`,
-            'enemy'
-          );
-
-          // Check if player defeated
-          if (newPlayerHp <= 0) {
-            emotionInstance.evaluateEvent({ type: 'player_defeated' }, get().enemy, get().player, memoryInstance);
-            const topElement = memoryInstance.getMostFrequentElement().element;
-            BossPersistenceManager.recordEncounterOutcome('malakor', false, topElement);
-
-            setTimeout(() => {
-              set({
-                turnPhase: 'defeat',
-                currentEnemyEmotion: 'triumphant',
-              });
-              gameEvents.emit('ENTITY_ANIMATION', { entityId: 'player', state: 'defeat' });
-              gameEvents.emit('ENTITY_ANIMATION', { entityId: 'enemy', state: 'victory' });
-              gameEvents.emit('ENEMY_EMOTION_CHANGED', {
-                emotion: 'triumphant',
-                reason: 'Crushed your petty insurrection!',
-              });
-              get().addLog('☠️ DEFEAT! The Petty Sorcerer was sent sprawling into the dungeon dust.', 'critical');
-            }, 400);
-            return;
-          }
-
-          setTimeout(() => {
-            get().concludeTurn();
-          }, 600);
-        },
-      });
-    }, 500);
+      setTimeout(() => {
+        get().concludeTurn();
+      }, 500);
+    }, 450);
   },
 
   concludeTurn: () => {
-    const { player, enemy, turnNumber, activeSpells } = get();
+    const { player, enemies, turnNumber, activeSpells, battleRecorder, activeDodge } = get();
 
-    // Process status effects
     const playerProcessed = processStatusEffects(player);
-    const enemyProcessed = processStatusEffects(enemy);
-
-    // Decrement spell cooldowns
     const decrementedSpells = activeSpells.map((s) => ({
       ...s,
       currentCooldown: Math.max(0, s.currentCooldown - 1),
     }));
 
-    // Natural mana regen
-    const regenPlayer = {
+    const regenPlayer: CombatEntity = {
       ...playerProcessed.updatedEntity,
       mana: Math.min(player.maxMana, playerProcessed.updatedEntity.mana + 10),
-    };
-    const regenEnemy = {
-      ...enemyProcessed.updatedEntity,
-      mana: Math.min(enemy.maxMana, enemyProcessed.updatedEntity.mana + 10),
+      stamina: Math.min(player.maxStamina ?? 100, (playerProcessed.updatedEntity.stamina ?? 100) + 20),
     };
 
-    // Calculate next enemy intent & generate prediction for next player action
-    const nextIntent = decideEnemyIntent(regenEnemy, regenPlayer);
-    const nextPrediction = predictionInstance.predictNextElement(memoryInstance);
-    memoryInstance.recordPrediction({
-      turn: turnNumber + 1,
-      predictedElement: nextPrediction.predictedElement,
-      confidence: nextPrediction.confidence,
-      reason: nextPrediction.reason,
+    const updatedEnemies = enemies.map((inst) => {
+      if (inst.entity.hp <= 0) return inst;
+
+      const processed = processStatusEffects(inst.entity);
+      const regenEntity: CombatEntity = {
+        ...processed.updatedEntity,
+        mana: Math.min(inst.entity.maxMana, processed.updatedEntity.mana + 10),
+      };
+
+      const nextPred = inst.predictionEngine.predictNextElement(inst.memory);
+      inst.memory.recordPrediction({
+        turn: turnNumber + 1,
+        predictedElement: nextPred.predictedElement,
+        confidence: nextPred.confidence,
+        reason: nextPred.reason,
+      });
+
+      inst.emotionSystem.evaluateEvent({ type: 'turn_passed' }, regenEntity, regenPlayer, inst.memory);
+      const em = inst.emotionSystem.getState();
+
+      return {
+        ...inst,
+        entity: regenEntity,
+        currentPrediction: nextPred,
+        elementResistances: inst.adaptation.getAllResistances(inst.memory),
+        predictabilityScore: inst.predictability.calculatePredictabilityScore(inst.memory),
+        predictabilityStage: inst.predictability.getStage(inst.memory),
+        currentEmotion: em.currentEmotion,
+        currentEmotionReason: em.reason,
+      };
     });
 
-    // Update natural turn emotional decay
-    emotionInstance.evaluateEvent({ type: 'turn_passed' }, regenEnemy, regenPlayer, memoryInstance);
-    const emotionState = emotionInstance.getState();
-    const updatedResistances = adaptationInstance.getAllResistances(memoryInstance);
-    const score = predictabilityInstance.calculatePredictabilityScore(memoryInstance);
-    const stage = predictabilityInstance.getStage(memoryInstance);
+    const livingEntities = updatedEnemies.filter((e) => e.entity.hp > 0).map((e) => e.entity);
+    updatedEnemies.forEach((inst) => {
+      if (inst.entity.hp > 0) {
+        const predictedLane = inst.memory.getMostFrequentLane() || undefined;
+        inst.currentIntent = EnemyCoordination.decideCoordinatedIntent(
+          inst.entity,
+          livingEntities,
+          regenPlayer,
+          predictedLane
+        );
+      }
+    });
+
+    if (battleRecorder && updatedEnemies[0]?.currentPrediction) {
+      battleRecorder.setTurn(turnNumber + 1);
+      battleRecorder.recordPrediction(
+        updatedEnemies[0].currentPrediction.predictedElement,
+        updatedEnemies[0].currentPrediction.confidence
+      );
+    }
+
+    const synced = syncPrimaryEnemyFields(updatedEnemies, get().selectedTargetId);
 
     set({
       player: regenPlayer,
-      enemy: regenEnemy,
+      enemies: updatedEnemies,
       turnNumber: turnNumber + 1,
       turnPhase: 'player_turn',
       activeSpells: decrementedSpells,
-      enemyIntent: nextIntent,
-      currentPrediction: nextPrediction,
-      elementResistances: updatedResistances,
-      predictabilityScore: score,
-      predictabilityStage: stage,
-      currentEnemyEmotion: emotionState.currentEmotion,
-      currentEmotionReason: emotionState.reason,
+      consecutiveDodges: activeDodge ? get().consecutiveDodges : 0,
+      ...synced,
     });
 
     gameEvents.emit('ENTITY_ANIMATION', { entityId: 'player', state: 'idle' });
     gameEvents.emit('ENTITY_ANIMATION', { entityId: 'enemy', state: 'idle' });
     gameEvents.emit('ENEMY_EMOTION_CHANGED', {
-      emotion: emotionState.currentEmotion,
-      reason: emotionState.reason,
+      emotion: synced.currentEnemyEmotion,
+      reason: synced.currentEmotionReason,
     });
   },
 }));

@@ -11,7 +11,13 @@ export type LeaderboardCategory =
   | 'fewest_turns_victory'
   | 'best_prediction_accuracy'
   | 'most_strategy_changes'
-  | 'highest_single_battle_damage';
+  | 'highest_single_battle_damage'
+  // Phase 9 categories
+  | 'most_dodges'
+  | 'highest_damage_avoided'
+  | 'highest_lifesteal'
+  | 'most_enemies_defeated'
+  | 'most_charged_casts';
 
 export interface LeaderboardEntry {
   rank: number;
@@ -127,6 +133,46 @@ const CATEGORY_DEFS: Record<LeaderboardCategory, CategoryDef> = {
     sortOrder: 'desc',
     format: (v) => `${v} shifts`,
   },
+  most_dodges: {
+    title: 'Most Successful Dodges',
+    description: 'Most enemy attacks evaded in a single battle',
+    unit: 'dodges',
+    extract: (r) => r.advancedCombat?.successfulDodges ?? 0,
+    sortOrder: 'desc',
+    format: (v) => `${v} dodges`,
+  },
+  highest_damage_avoided: {
+    title: 'Highest Damage Avoided',
+    description: 'Most incoming damage avoided through dodging & positioning',
+    unit: 'DMG',
+    extract: (r) => r.advancedCombat?.damageAvoided ?? 0,
+    sortOrder: 'desc',
+    format: (v) => `${v} avoided`,
+  },
+  highest_lifesteal: {
+    title: 'Highest Lifesteal',
+    description: 'Most HP drained via lifesteal in one battle',
+    unit: 'HP',
+    extract: (r) => r.combat.totalLifesteal,
+    sortOrder: 'desc',
+    format: (v) => `${v} HP`,
+  },
+  most_enemies_defeated: {
+    title: 'Most Enemies Defeated',
+    description: 'Most foes vanquished in a single multi-enemy encounter',
+    unit: 'foes',
+    extract: (r) => r.advancedCombat?.enemiesDefeated ?? (r.outcome === 'victory' ? 1 : 0),
+    sortOrder: 'desc',
+    format: (v) => `${v} foes`,
+  },
+  most_charged_casts: {
+    title: 'Most Charged Spells',
+    description: 'Most charged incantations unleashed in one battle',
+    unit: 'casts',
+    extract: (r) => r.advancedCombat?.chargedSpellsCast ?? 0,
+    sortOrder: 'desc',
+    format: (v) => `${v} charged`,
+  },
 };
 
 // ─── Engine ───────────────────────────────────────────────────────────
@@ -168,7 +214,19 @@ export class LeaderboardEngine {
     });
 
     // Filter out zero-value entries for certain categories
-    if (['highest_damage', 'most_crits', 'highest_healing', 'most_strategy_changes', 'highest_single_battle_damage'].includes(category)) {
+    if (
+      [
+        'highest_damage',
+        'most_crits',
+        'highest_healing',
+        'most_strategy_changes',
+        'highest_single_battle_damage',
+        'most_dodges',
+        'highest_damage_avoided',
+        'highest_lifesteal',
+        'most_charged_casts',
+      ].includes(category)
+    ) {
       candidates = candidates.filter((r) => def.extract(r) > 0);
     }
 

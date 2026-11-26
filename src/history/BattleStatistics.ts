@@ -1,4 +1,4 @@
-import { BattleRecord, BattleOutcome } from './BattleRecord';
+import { BattleRecord } from './BattleRecord';
 import { OffensiveElement, OFFENSIVE_ELEMENTS } from '../spells/types';
 
 // ─── Lifetime Statistics ──────────────────────────────────────────────
@@ -42,6 +42,14 @@ export interface LifetimeStatistics {
   totalPlayTimeMs: number;
   averageBattleDurationMs: number;
   averageTurnsPerBattle: number;
+
+  // Phase 9 totals
+  totalSuccessfulDodges: number;
+  totalPerfectDodges: number;
+  totalDamageAvoided: number;
+  totalEnemiesDefeated: number;
+  totalChargedSpells: number;
+  totalEnemiesStaggered: number;
 
   // Boss records
   bossRecords: Record<string, BossRecord>;
@@ -100,6 +108,12 @@ export function rebuildStatisticsFromRecords(records: BattleRecord[]): LifetimeS
     totalPlayTimeMs: 0,
     averageBattleDurationMs: 0,
     averageTurnsPerBattle: 0,
+    totalSuccessfulDodges: 0,
+    totalPerfectDodges: 0,
+    totalDamageAvoided: 0,
+    totalEnemiesDefeated: 0,
+    totalChargedSpells: 0,
+    totalEnemiesStaggered: 0,
     bossRecords: {},
   };
 
@@ -179,6 +193,16 @@ export function rebuildStatisticsFromRecords(records: BattleRecord[]): LifetimeS
     // Duration
     stats.totalPlayTimeMs += record.durationMs;
     totalTurns += record.totalTurns;
+
+    // Phase 9 optional advanced telemetry
+    if (record.advancedCombat) {
+      stats.totalSuccessfulDodges += record.advancedCombat.successfulDodges || 0;
+      stats.totalPerfectDodges += record.advancedCombat.perfectDodges || 0;
+      stats.totalDamageAvoided += record.advancedCombat.damageAvoided || 0;
+      stats.totalEnemiesDefeated += record.advancedCombat.enemiesDefeated || 0;
+      stats.totalChargedSpells += record.advancedCombat.chargedSpellsCast || 0;
+      stats.totalEnemiesStaggered += record.advancedCombat.enemiesStaggered || 0;
+    }
 
     // Boss records
     const bossKey = record.bossId || record.opponentId;

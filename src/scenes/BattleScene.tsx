@@ -8,6 +8,7 @@ import { CombatTextManager } from '../entities/CombatTextManager';
 import { useCombatStore } from '../stores/combatStore';
 import { gameEvents } from '../engine/eventBus';
 import { gameCamera } from '../engine/camera';
+import { LANE_COORDS } from '../combat/LaneSystem';
 
 interface Mote {
   x: number;
@@ -19,12 +20,11 @@ interface Mote {
 }
 
 export function BattleScene() {
-  const { player, enemy } = useCombatStore();
+  const { player, enemies } = useCombatStore();
   const cameraContainerRef = useRef<PixiContainer | null>(null);
   const motesGraphicRef = useRef<PixiGraphics | null>(null);
   const motesRef = useRef<Mote[]>([]);
 
-  // Initialize ambient magical particles
   useEffect(() => {
     const list: Mote[] = [];
     for (let i = 0; i < 30; i++) {
@@ -40,7 +40,6 @@ export function BattleScene() {
     motesRef.current = list;
   }, []);
 
-  // Listen to screen shake events
   useEffect(() => {
     const unsub = gameEvents.on('SCREEN_SHAKE', (payload) => {
       gameCamera.triggerShake(payload.intensity, payload.durationMs);
@@ -48,7 +47,6 @@ export function BattleScene() {
     return () => unsub();
   }, []);
 
-  // Frame tick: update camera & ambient motes
   useTick((ticker) => {
     const dt = ticker.deltaTime * (1 / 60);
     gameCamera.update(dt);
@@ -58,7 +56,6 @@ export function BattleScene() {
       cameraContainerRef.current.position.set(offset.x, offset.y);
     }
 
-    // Update ambient motes
     if (motesGraphicRef.current) {
       const g = motesGraphicRef.current;
       g.clear();
@@ -76,34 +73,44 @@ export function BattleScene() {
     }
   });
 
+  const playerCoords = LANE_COORDS[player.lane ?? 'center'];
+
   return (
     <pixiContainer ref={cameraContainerRef}>
-      {/* Dark Fantasy Castle Environment */}
       <ArenaBackground />
 
-      {/* Floating Arcane Embers */}
       <pixiGraphics ref={motesGraphicRef} draw={() => {}} />
 
-      {/* The Petty Sorcerer (Player, Left) */}
+      {/* The Petty Sorcerer (Player, Left side at active lane) */}
       <WizardEntity
         type="player"
         entity={player}
-        baseX={260}
-        baseY={370}
+        baseX={playerCoords.playerX}
+        baseY={playerCoords.playerY}
       />
 
-      {/* Arch-Mage Malakor (Enemy, Right) */}
-      <WizardEntity
-        type="enemy"
-        entity={enemy}
-        baseX={700}
-        baseY={370}
-      />
+      {/* Active Encounter Enemies (Right side, positioned by lane) */}
+      {enemies.map((inst, idx) => {
+        const lane = inst.entity.lane ?? 'center';
+        const coords = LANE_COORDS[lane];
+        // Slight horizontal stagger if multiple enemies share a lane
+        const sameLaneBefore = enemies
+          .slice(0, idx)
+          .filter((other) => (other.entity.lane ?? 'center') === lane).length;
+        const xOffset = sameLaneBefore * 55;
 
-      {/* Projectiles (Spells traveling in flight) */}
+        return (
+          <WizardEntity
+            key={inst.entity.id}
+            type="enemy"
+            entity={inst.entity}
+            baseX={coords.enemyX + xOffset}
+            baseY={coords.enemyY}
+          />
+        );
+      })}
+
       <ProjectileManager />
-
-      {/* In-world Floating Damage Numbers */}
       <CombatTextManager />
     </pixiContainer>
   );

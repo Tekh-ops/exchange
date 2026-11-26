@@ -25,6 +25,17 @@ export type TimelineEventType =
   | 'enemy_emotion_changed'
   | 'player_strategy_changed'
   | 'critical_hp_threshold'
+  // Phase 9 timeline events
+  | 'lane_changed'
+  | 'dodge_attempted'
+  | 'dodge_succeeded'
+  | 'perfect_dodge'
+  | 'spell_charged'
+  | 'spell_interrupted'
+  | 'enemy_staggered'
+  | 'boss_stage_transition'
+  | 'enemy_defeated'
+  | 'voice_cast'
   | 'battle_ended';
 
 // ─── Timeline Event ───────────────────────────────────────────────────
@@ -115,4 +126,23 @@ export interface BattleRecord {
 
   // Timeline
   timeline: BattleTimelineEvent[];
+
+  // Phase 9 optional advanced combat telemetry (backward compatible with Phase 8 records)
+  advancedCombat?: {
+    enemiesDefeated: number;
+    totalEnemies: number;
+    dodgeAttempts: number;
+    successfulDodges: number;
+    perfectDodges: number;
+    damageAvoided: number;
+    laneChanges: number;
+    chargedSpellsCast: number;
+    interruptedSpells: number;
+    postureDamageDealt: number;
+    enemiesStaggered: number;
+    bossStagesCleared: number;
+    wastedHealing: number;
+    voiceCasts: number;
+    voiceFailures: number;
+  };
 }

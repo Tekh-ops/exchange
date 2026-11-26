@@ -13,6 +13,9 @@ export const ALL_SPELLS: Record<string, Spell> = {
     currentCooldown: 0,
     castAnimation: 'spark',
     projectileType: 'spark',
+    targetRule: 'single',
+    postureDamage: 6,
+    synergyHint: 'Conducts +25% bonus damage through Frost.',
     effects: [
       { type: 'damage', value: 12 },
       { type: 'mana_restore', value: 8 },
@@ -30,6 +33,13 @@ export const ALL_SPELLS: Record<string, Spell> = {
     currentCooldown: 0,
     castAnimation: 'missile',
     projectileType: 'arcane_bolt',
+    targetRule: 'single',
+    postureDamage: 14,
+    chargeable: true,
+    chargeManaBonus: 10,
+    chargeDamageMultiplier: 1.75,
+    chargeTargetRule: 'single',
+    synergyHint: 'Chargeable for +75% DMG & heavy posture break.',
     effects: [
       { type: 'damage', value: 26 },
     ],
@@ -37,7 +47,7 @@ export const ALL_SPELLS: Record<string, Spell> = {
   frigid_snub: {
     id: 'frigid_snub',
     name: 'Frigid Snub',
-    description: 'A gust of freezing spite that glaciates the air with unadulterated condescension.',
+    description: 'A gust of freezing spite that glaciates the air and chills foes with Frost.',
     pettyComment: '"I am giving you the cold shoulder, quite literally!"',
     element: 'ice',
     isOffensive: true,
@@ -46,8 +56,16 @@ export const ALL_SPELLS: Record<string, Spell> = {
     currentCooldown: 0,
     castAnimation: 'ice',
     projectileType: 'ice_shard',
+    targetRule: 'single',
+    postureDamage: 12,
+    chargeable: true,
+    chargeManaBonus: 12,
+    chargeDamageMultiplier: 1.4,
+    chargeTargetRule: 'adjacent_lanes',
+    synergyHint: 'Applies Frost. Charge to hit adjacent lanes!',
     effects: [
       { type: 'damage', value: 24 },
+      { type: 'status', value: 0, durationTurns: 2, statusType: 'frost' },
     ],
   },
   pyro_tantrum: {
@@ -62,6 +80,13 @@ export const ALL_SPELLS: Record<string, Spell> = {
     currentCooldown: 0,
     castAnimation: 'fire',
     projectileType: 'fire_orb',
+    targetRule: 'lane',
+    postureDamage: 26,
+    chargeable: true,
+    chargeManaBonus: 15,
+    chargeDamageMultiplier: 1.5,
+    chargeTargetRule: 'all_enemies',
+    synergyHint: 'Thermal Shatter (+35% vs Frost). Charge hits ALL enemies!',
     effects: [
       { type: 'damage', value: 48 },
     ],
@@ -78,6 +103,9 @@ export const ALL_SPELLS: Record<string, Spell> = {
     currentCooldown: 0,
     castAnimation: 'hex',
     projectileType: 'void_skull',
+    targetRule: 'single',
+    postureDamage: 10,
+    synergyHint: 'Primes target for Hex Detonation (+20% Fire/Arcane DMG).',
     effects: [
       { type: 'damage', value: 14 },
       { type: 'status', value: 8, durationTurns: 3, statusType: 'poison' },
@@ -94,6 +122,8 @@ export const ALL_SPELLS: Record<string, Spell> = {
     cooldownTurns: 2,
     currentCooldown: 0,
     castAnimation: 'shield',
+    targetRule: 'self',
+    synergyHint: 'Shields protect Charged Spells from interruption!',
     effects: [
       { type: 'shield', value: 35 },
     ],
@@ -101,7 +131,7 @@ export const ALL_SPELLS: Record<string, Spell> = {
   siphon_pride: {
     id: 'siphon_pride',
     name: 'Siphon Pride',
-    description: 'Drains the enemy’s vitality to restore health and replenish depleted mana.',
+    description: 'Drains the enemy’s vitality via lifesteal to restore health and replenish mana.',
     pettyComment: '"Your arrogance smells delicious, I shall partake."',
     element: 'arcane',
     isOffensive: true,
@@ -110,22 +140,49 @@ export const ALL_SPELLS: Record<string, Spell> = {
     currentCooldown: 0,
     castAnimation: 'drain',
     projectileType: 'void_skull',
+    targetRule: 'single',
+    lifestealRatio: 0.65,
+    postureDamage: 10,
+    synergyHint: 'Lifesteals 65% of actual damage dealt.',
     effects: [
       { type: 'damage', value: 16 },
-      { type: 'heal', value: 16 },
       { type: 'mana_restore', value: 15 },
+    ],
+  },
+  mend_minor_miracles: {
+    id: 'mend_minor_miracles',
+    name: 'Mend of Minor Miracles',
+    description: 'Stitches minor bruises and bruised pride together with restorative aura.',
+    pettyComment: '"Tis merely a flesh wound—and an insult to my tailor!"',
+    element: 'defense',
+    isOffensive: false,
+    manaCost: 22,
+    cooldownTurns: 2,
+    currentCooldown: 0,
+    castAnimation: 'drain',
+    targetRule: 'self',
+    effects: [
+      { type: 'heal', value: 34 },
+    ],
+  },
+  reversal_of_misfortune: {
+    id: 'reversal_of_misfortune',
+    name: 'Reversal of Misfortune',
+    description: 'Converts recent pain into vitality, restoring HP based on recent damage taken.',
+    pettyComment: '"I am rubber, you are glue, and my health bar rejects you!"',
+    element: 'defense',
+    isOffensive: false,
+    manaCost: 26,
+    cooldownTurns: 3,
+    currentCooldown: 0,
+    castAnimation: 'shield',
+    targetRule: 'self',
+    effects: [
+      { type: 'reversal_heal', value: 60 }, // 60% of recent damage taken
     ],
   },
 };
 
 export function getInitialSpellbook(): Spell[] {
-  return [
-    { ...ALL_SPELLS.petty_spark },
-    { ...ALL_SPELLS.arcane_dart },
-    { ...ALL_SPELLS.frigid_snub },
-    { ...ALL_SPELLS.pyro_tantrum },
-    { ...ALL_SPELLS.cursed_hex },
-    { ...ALL_SPELLS.ego_shield },
-    { ...ALL_SPELLS.siphon_pride },
-  ];
+  return Object.values(ALL_SPELLS).map((s) => ({ ...s }));
 }

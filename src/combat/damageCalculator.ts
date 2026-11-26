@@ -17,12 +17,15 @@ export function calculateSpellDamage(
   elementalResistance: number = 0,
   extraDeflection: number = 0
 ): CalculatedDamage {
-  // Check for weaken or strengthen status effects
+  // Check for weaken, strengthen, or staggered status effects
   let modifier = 1.0;
   attacker.statusEffects.forEach(st => {
     if (st.type === 'strengthen') modifier += 0.25;
-    if (st.type === 'weaken') modifier -= 0.25;
+    if (st.type === 'weaken' || st.type === 'frost') modifier -= 0.15;
   });
+  if (defender.isStaggered) {
+    modifier += 0.25;
+  }
 
   // Calculate critical roll
   const isCritical = Math.random() < attacker.critRate;

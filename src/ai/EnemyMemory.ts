@@ -33,6 +33,12 @@ export class EnemyMemory {
   private lastElement: OffensiveElement | null = null;
   private defensiveActionsCount: number = 0;
   private lastActionWasDefensive: boolean = false;
+  // Phase 9 player habit tracking
+  private laneHistory: ('left' | 'center' | 'right')[] = [];
+  private dodgeHistory: ('quickstep' | 'arcane_blink' | 'perfect_dodge')[] = [];
+  private lowHpHealsCount: number = 0;
+  private chargedCastCount: number = 0;
+  private targetCounts: Record<string, number> = {};
 
   constructor(config?: EnemyMemoryConfig) {
     this.bossId = config?.bossId ?? 'malakor';
@@ -246,6 +252,57 @@ export class EnemyMemory {
     return this.lastActionWasDefensive;
   }
 
+  // ─── Phase 9 Behavioral Habit Tracking ────────────────────────────
+
+  public recordPlayerLane(lane: 'left' | 'center' | 'right'): void {
+    this.laneHistory.push(lane);
+    if (this.laneHistory.length > this.windowSize) this.laneHistory.shift();
+  }
+
+  public recordPlayerDodge(dodgeType: 'quickstep' | 'arcane_blink' | 'perfect_dodge'): void {
+    this.dodgeHistory.push(dodgeType);
+    if (this.dodgeHistory.length > this.windowSize) this.dodgeHistory.shift();
+  }
+
+  public recordLowHpHeal(): void {
+    this.lowHpHealsCount += 1;
+  }
+
+  public recordChargedCast(): void {
+    this.chargedCastCount += 1;
+  }
+
+  public recordTargetSelection(targetId: string): void {
+    this.targetCounts[targetId] = (this.targetCounts[targetId] || 0) + 1;
+  }
+
+  public getMostFrequentLane(): 'left' | 'center' | 'right' | null {
+    if (this.laneHistory.length < 2) return null;
+    const counts: Record<string, number> = {};
+    for (const l of this.laneHistory) counts[l] = (counts[l] || 0) + 1;
+    let best: 'left' | 'center' | 'right' | null = null;
+    let max = 0;
+    for (const [k, v] of Object.entries(counts)) {
+      if (v > max) {
+        max = v;
+        best = k as 'left' | 'center' | 'right';
+      }
+    }
+    return best;
+  }
+
+  public getConsecutiveDodgeCount(): number {
+    return this.dodgeHistory.length;
+  }
+
+  public getLowHpHealsCount(): number {
+    return this.lowHpHealsCount;
+  }
+
+  public getChargedCastCount(): number {
+    return this.chargedCastCount;
+  }
+
   public reset(): void {
     this.actionHistory = [];
     this.predictionHistory = [];
@@ -255,5 +312,10 @@ export class EnemyMemory {
     this.lastElement = null;
     this.defensiveActionsCount = 0;
     this.lastActionWasDefensive = false;
+    this.laneHistory = [];
+    this.dodgeHistory = [];
+    this.lowHpHealsCount = 0;
+    this.chargedCastCount = 0;
+    this.targetCounts = {};
   }
 }

@@ -12,10 +12,15 @@ export function GrimoireModal({ isOpen, onClose }: GrimoireModalProps) {
     progression,
     equipment,
     spells,
+    preparedSpellIds,
     getTotalMaxHp,
     getTotalMaxMana,
     getTotalSpellPower,
     getTotalCritRate,
+    getMaxPreparedSpells,
+    getChargeCostReduction,
+    getDodgeEfficiencyBonus,
+    getPostureDamageMultiplier,
   } = usePlayerStore();
 
   if (!isOpen) return null;
@@ -83,6 +88,24 @@ export function GrimoireModal({ isOpen, onClose }: GrimoireModalProps) {
                   <span className="text-gray-400">Critical Strike:</span>
                   <span className="font-pixel text-[10px] text-amber-400">
                     {Math.round(getTotalCritRate() * 100)}%
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Prepared Slots:</span>
+                  <span className="font-pixel text-[10px] text-purple-300">
+                    {preparedSpellIds.length} / {getMaxPreparedSpells()}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Charge Discount / Dodge+:</span>
+                  <span className="font-pixel text-[10px] text-sky-300">
+                    -{getChargeCostReduction()} MP / +{Math.round(getDodgeEfficiencyBonus() * 100)}%
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Posture Multiplier:</span>
+                  <span className="font-pixel text-[10px] text-amber-300">
+                    {getPostureDamageMultiplier().toFixed(2)}x
                   </span>
                 </div>
               </div>
